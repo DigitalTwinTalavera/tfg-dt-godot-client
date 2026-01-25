@@ -1,0 +1,76 @@
+# Godot 4+ specific ignores
+.godot/
+
+# Godot-specific ignores
+*.translation
+
+# Imported resources (Godot handles these automatically)
+.import/
+
+# Editor settings (user-specific)
+*.cfg
+!project.godot
+!export_presets.cfg
+
+# Mono-specific ignores (if using C#)
+.mono/
+data_*/
+mono_crash.*.json
+
+# Build outputs
+/android/
+/ios/
+/web/
+/windows/
+/linux/
+/macos/
+
+# Export templates and builds
+*.apk
+*.aab
+*.ipa
+*.exe
+*.x86_64
+*.x86
+*.arm64
+*.arm32
+*.wasm
+*.pck
+*.zip
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# IDE and editor files
+.idea/
+.vscode/
+*.sublime-*
+*.code-workspace
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Local configuration (if you create any)
+config.local.gd
+*.local.gd
+
+# Backup files
+*~
+*.bak
+*.swp
+*.swo
+
+# Asset working files (keep source files if needed)
+*.psd
+*.xcf
+*.blend1
+*.blend2
