@@ -91,8 +91,8 @@ func has_valid_position() -> bool:
 
 
 ## Parse node type string from backend to enum
-static func _parse_node_type(type_string: String) -> NodeType:
-	match type_string.to_lower():
+static func _parse_node_type(node_type_str: String) -> NodeType:
+	match node_type_str.to_lower():
 		"intersection":
 			return NodeType.INTERSECTION
 		"traffic_light":

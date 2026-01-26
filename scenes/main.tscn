@@ -59,6 +59,10 @@ text = "HTTP Connection Test"
 layout_mode = 2
 text = "Network Loading Test"
 
+[node name="OpenCoordinateTestButton" type="Button" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Coordinate Conversion Test"
+
 [node name="HSeparator2" type="HSeparator" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2
 
