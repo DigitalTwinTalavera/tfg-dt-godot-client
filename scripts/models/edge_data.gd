@@ -161,8 +161,8 @@ func get_center_position() -> Vector2:
 
 
 ## Parse road type string from backend to enum
-static func _parse_road_type(type_string: String) -> RoadType:
-	match type_string.to_lower():
+static func _parse_road_type(road_type_str: String) -> RoadType:
+	match road_type_str.to_lower():
 		"motorway":
 			return RoadType.MOTORWAY
 		"motorway_link":

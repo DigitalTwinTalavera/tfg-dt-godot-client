@@ -70,6 +70,23 @@ class RoadColors:
 	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)  # Default dark gray
 
 
+## Coordinate conversion constants
+class Coordinates:
+	## Meters per degree of latitude (approximately constant worldwide)
+	const METERS_PER_DEGREE_LAT: float = 111320.0
+
+	## Earth's radius in meters (WGS84 mean radius)
+	const EARTH_RADIUS_METERS: float = 6371000.0
+
+	## Default location: Talavera de la Reina, Spain
+	const DEFAULT_CENTER_LON: float = -4.8300
+	const DEFAULT_CENTER_LAT: float = 39.9600
+
+	## Coordinate precision for comparisons
+	const GPS_PRECISION: float = 0.000001  # ~0.1 meters
+	const METERS_PRECISION: float = 0.01   # 1 centimeter
+
+
 ## Application settings
 const APP_NAME: String = "Digital Twin Traffic Client"
 const APP_VERSION: String = "0.1.0"

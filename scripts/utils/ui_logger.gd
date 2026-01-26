@@ -50,8 +50,8 @@ func clear() -> void:
 
 
 ## Add a separator line
-func separator(char: String = "-", length: int = 40) -> void:
-	info(char.repeat(length))
+func separator(sep_char: String = "-", length: int = 40) -> void:
+	info(sep_char.repeat(length))
 
 
 ## Log with a custom color

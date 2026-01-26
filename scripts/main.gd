@@ -8,6 +8,7 @@ extends Control
 @onready var check_health_button: Button = $MarginContainer/VBoxContainer/CheckHealthButton
 @onready var open_test_scene_button: Button = $MarginContainer/VBoxContainer/OpenTestSceneButton
 @onready var open_network_test_button: Button = $MarginContainer/VBoxContainer/OpenNetworkTestButton
+@onready var open_coordinate_test_button: Button = $MarginContainer/VBoxContainer/OpenCoordinateTestButton
 @onready var result_text: RichTextLabel = $MarginContainer/VBoxContainer/ResultText
 
 
@@ -26,6 +27,7 @@ func _connect_signals() -> void:
 	check_health_button.pressed.connect(_on_check_health_pressed)
 	open_test_scene_button.pressed.connect(_on_open_test_scene_pressed)
 	open_network_test_button.pressed.connect(_on_open_network_test_pressed)
+	open_coordinate_test_button.pressed.connect(_on_open_coordinate_test_pressed)
 	HTTPManager.connection_status_changed.connect(_on_connection_status_changed)
 
 
@@ -70,6 +72,10 @@ func _on_open_test_scene_pressed() -> void:
 
 func _on_open_network_test_pressed() -> void:
 	get_tree().change_scene_to_file("res://scenes/test_scenes/test_load_network.tscn")
+
+
+func _on_open_coordinate_test_pressed() -> void:
+	get_tree().change_scene_to_file("res://scenes/test_scenes/test_coordinates.tscn")
 
 
 func _on_connection_status_changed(connected: bool) -> void:

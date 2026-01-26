@@ -2,6 +2,26 @@
 
 Cliente Godot 4.x para el gemelo digital de tráfico urbano de Talavera de la Reina.
 
+## Tabla de Contenidos
+
+- [Descripción](#descripción)
+- [Requisitos](#requisitos)
+- [Instalación](#instalación)
+- [Estructura del Proyecto](#estructura-del-proyecto)
+- [Arquitectura](#arquitectura)
+- [Configuración](#configuración)
+- [Componentes](#componentes)
+  - [Capa de Comunicación HTTP](#capa-de-comunicación-http)
+  - [Modelos de Datos](#modelos-de-datos)
+  - [Gestión de Red Vial](#gestión-de-red-vial)
+  - [Conversión de Coordenadas](#conversión-de-coordenadas)
+  - [Utilidades](#utilidades)
+- [Escenas de Prueba](#escenas-de-prueba)
+- [Ejemplos de Uso](#ejemplos-de-uso)
+- [API Reference](#api-reference)
+
+---
+
 ## Descripción
 
 Este proyecto implementa el frontend 3D para visualizar y controlar la simulación de tráfico urbano. Desarrollado con Godot 4.5 y GDScript, se comunica con el backend FastAPI mediante HTTP y WebSocket.
@@ -9,10 +29,12 @@ Este proyecto implementa el frontend 3D para visualizar y controlar la simulaci�
 ### Características principales
 
 - **Cliente HTTP** con async/await para comunicación REST con el backend
-- **WebSocket** para comunicación en tiempo real (próximamente)
+- **Gestión de red vial** con carga paginada y caché de datos
+- **Conversión de coordenadas** GPS (EPSG:4326) a espacio 3D de Godot
+- **Modelos de datos** para nodos y aristas de la red vial
 - **Sistema de configuración** centralizado
 - **Manejo de errores** robusto con timeouts y reintentos
-- **Escenas de prueba** para verificar conectividad
+- **Escenas de prueba** para verificar funcionalidad
 
 ## Requisitos
 
@@ -49,191 +71,789 @@ uvicorn app.main:app --reload
 
 1. Presionar F5 o el botón "Play" en Godot
 2. Hacer clic en "Check Health" para verificar la conexión
-3. Usar "Open Test Scene" para ejecutar pruebas completas
+3. Usar las escenas de prueba para verificar funcionalidad
 
-## Configuración
-
-La configuración se encuentra en [config/config.gd](config/config.gd):
-
-```gdscript
-## Backend API configuration
-const BACKEND_HOST: String = "localhost"
-const BACKEND_PORT: int = 8000
-const BACKEND_PROTOCOL: String = "http"
-
-## HTTP client configuration
-const HTTP_TIMEOUT_SECONDS: float = 10.0
-const HTTP_MAX_RETRIES: int = 3
-```
-
-Para cambiar la URL del backend, modifica estas constantes.
+---
 
 ## Estructura del Proyecto
 
 ```
 tfg-dt-godot-client/
-├── scenes/
-│   ├── main.tscn                      # Escena principal
-│   └── test_scenes/
-│       └── test_connection.tscn       # Escena de pruebas HTTP
-├── scripts/
-│   ├── autoload/
-│   │   └── http_manager.gd            # Singleton HTTPManager
-│   ├── http/
-│   │   ├── http_client.gd             # Wrapper HTTP con async/await
-│   │   └── http_result.gd             # Clase de resultado HTTP
-│   ├── models/                        # Modelos de datos (futuro)
-│   ├── test_scenes/
-│   │   └── test_connection.gd         # Script de pruebas
-│   ├── utils/
-│   │   └── json_utils.gd              # Utilidades JSON
-│   └── main.gd                        # Script escena principal
-├── resources/
-│   ├── materials/                     # Materiales (futuro)
-│   ├── meshes/                        # Mallas 3D (futuro)
-│   └── shaders/                       # Shaders (futuro)
-├── assets/                            # Assets externos (futuro)
 ├── config/
-│   └── config.gd                      # Configuración global
-├── .gitignore
-├── project.godot
-└── README.md
+│   └── config.gd                   # Configuración global
+├── scenes/
+│   ├── main.tscn                   # Escena del menú principal
+│   └── test_scenes/
+│       ├── test_connection.tscn    # Pruebas de conexión HTTP
+│       ├── test_load_network.tscn  # Pruebas de carga de red
+│       └── test_coordinates.tscn   # Pruebas de coordenadas
+├── scripts/
+│   ├── main.gd                     # Script de escena principal
+│   ├── autoload/
+│   │   ├── http_manager.gd         # Singleton HTTP
+│   │   └── network_manager.gd      # Singleton de red vial
+│   ├── http/
+│   │   ├── http_client.gd          # Wrapper HTTP con async/await
+│   │   └── http_result.gd          # Clase de respuesta HTTP
+│   ├── models/
+│   │   ├── node_data.gd            # Nodo de red vial
+│   │   ├── edge_data.gd            # Arista de red vial
+│   │   └── road_network.gd         # Contenedor de red completa
+│   ├── utils/
+│   │   ├── json_utils.gd           # Utilidades JSON
+│   │   ├── ui_logger.gd            # Logger para UI
+│   │   └── coordinate_converter.gd # Conversión de coordenadas
+│   └── test_scenes/
+│       ├── test_connection.gd
+│       ├── test_load_network.gd
+│       └── test_coordinates.gd
+└── project.godot                   # Configuración del proyecto
 ```
 
-## Uso del Cliente HTTP
+---
 
-### Acceso global via HTTPManager
+## Arquitectura
 
-El singleton `HTTPManager` está disponible globalmente:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Aplicación Godot                            │
+├─────────────────────────────────────────────────────────────────┤
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐  │
+│  │   Escenas    │    │   Autoloads  │    │    Utilidades    │  │
+│  │              │    │              │    │                  │  │
+│  │  - main      │───▶│ HTTPManager  │◀───│  JsonUtils       │  │
+│  │  - test_*    │    │              │    │  UILogger        │  │
+│  │              │───▶│ NetworkMgr   │◀───│  CoordConverter  │  │
+│  └──────────────┘    └──────────────┘    └──────────────────┘  │
+│                             │                                    │
+│                             ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                    Modelos de Datos                       │   │
+│  │   NodeData  │  EdgeData  │  RoadNetwork  │  HTTPResult   │   │
+│  └──────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────┤
+│                        Capa HTTP                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  HTTPClient2: peticiones HTTP con async/await             │   │
+│  │  - GET, POST, PUT, DELETE, PATCH                          │   │
+│  │  - Parseo automático de JSON                              │   │
+│  │  - Manejo de timeouts                                     │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Backend API (FastAPI)                        │
+│                    http://localhost:8000                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Configuración
+
+Toda la configuración está centralizada en `config/config.gd`:
+
+### Conexión al Backend
 
 ```gdscript
-# Health check básico
+const BACKEND_HOST: String = "localhost"
+const BACKEND_PORT: int = 8000
+const BACKEND_PROTOCOL: String = "http"
+
+# URLs calculadas automáticamente
+static var base_url: String  # http://localhost:8000
+static var api_url: String   # http://localhost:8000/api
+static var ws_url: String    # ws://localhost:8000/ws/simulation
+```
+
+### Configuración HTTP
+
+```gdscript
+const HTTP_TIMEOUT_SECONDS: float = 10.0
+const HTTP_MAX_RETRIES: int = 3
+const HTTP_RETRY_DELAY_SECONDS: float = 1.0
+const HTTP_TIMEOUT_BUFFER: float = 1.0
+```
+
+### Carga de Red Vial
+
+```gdscript
+const NETWORK_PAGE_SIZE: int = 1000
+const NETWORK_MAX_RETRIES: int = 3
+const NETWORK_RETRY_DELAY: float = 1.0
+const NETWORK_PAGINATION_DELAY: float = 0.01
+const NETWORK_PROGRESS_NODES_WEIGHT: float = 0.5
+const NETWORK_PROGRESS_EDGES_WEIGHT: float = 0.5
+```
+
+### Endpoints de la API
+
+```gdscript
+class Endpoints:
+    const HEALTH: String = "/health"
+    const HEALTH_DETAILED: String = "/health/detailed"
+    const MAP_IMPORT: String = "/map/import"
+    const MAP_IMPORT_STATUS: String = "/map/import/status"
+    const MAP_NODES: String = "/map/nodes"
+    const MAP_EDGES: String = "/map/edges"
+```
+
+### Colores de Carreteras (Visualización)
+
+```gdscript
+class RoadColors:
+    const MOTORWAY: Color = Color(0.9, 0.4, 0.1)      # Naranja
+    const TRUNK: Color = Color(0.9, 0.6, 0.2)         # Naranja claro
+    const PRIMARY: Color = Color(0.9, 0.8, 0.3)       # Amarillo
+    const SECONDARY: Color = Color(0.7, 0.7, 0.7)    # Gris claro
+    const TERTIARY: Color = Color(0.8, 0.8, 0.8)     # Gris más claro
+    const RESIDENTIAL: Color = Color(1.0, 1.0, 1.0)  # Blanco
+    const SERVICE: Color = Color(0.6, 0.6, 0.6)      # Gris
+    const UNKNOWN: Color = Color(0.5, 0.5, 0.5)      # Gris oscuro
+```
+
+### Constantes de Coordenadas
+
+```gdscript
+class Coordinates:
+    const METERS_PER_DEGREE_LAT: float = 111320.0
+    const EARTH_RADIUS_METERS: float = 6371000.0
+    const DEFAULT_CENTER_LON: float = -4.8300  # Talavera de la Reina
+    const DEFAULT_CENTER_LAT: float = 39.9600
+    const GPS_PRECISION: float = 0.000001      # ~0.1 metros
+    const METERS_PRECISION: float = 0.01       # 1 centímetro
+```
+
+---
+
+## Componentes
+
+### Capa de Comunicación HTTP
+
+#### HTTPResult
+
+Clase que encapsula la información de respuesta HTTP.
+
+```gdscript
+# Propiedades
+var success: bool           # Si la petición fue exitosa
+var status_code: int        # Código HTTP (200, 404, etc.)
+var data: Variant           # Cuerpo JSON parseado
+var body: String            # Cuerpo raw de la respuesta
+var error_message: String   # Descripción del error si falló
+var error_type: ErrorType   # Categorización del error
+var headers: Dictionary     # Headers de respuesta
+
+# Tipos de error
+enum ErrorType {
+    NONE,
+    CONNECTION_REFUSED,
+    TIMEOUT,
+    DNS_FAILURE,
+    SSL_ERROR,
+    HTTP_ERROR,
+    PARSE_ERROR,
+    UNKNOWN
+}
+
+# Métodos factory
+static func ok(status, data, body, headers) -> HTTPResult
+static func error(message, type, status) -> HTTPResult
+static func from_http_error(http_error) -> HTTPResult
+```
+
+#### HTTPClient2
+
+Cliente HTTP de bajo nivel con patrón async/await.
+
+```gdscript
+class_name HTTPClient2
+extends Node
+
+# Señales
+signal request_completed(result: HTTPResult)
+
+# Métodos
+func get_request(endpoint: String, headers: PackedStringArray = []) -> HTTPResult
+func post_request(endpoint: String, data: Dictionary = {}, headers: PackedStringArray = []) -> HTTPResult
+func put_request(endpoint: String, data: Dictionary = {}, headers: PackedStringArray = []) -> HTTPResult
+func delete_request(endpoint: String, headers: PackedStringArray = []) -> HTTPResult
+func patch_request(endpoint: String, data: Dictionary = {}, headers: PackedStringArray = []) -> HTTPResult
+
+func is_busy() -> bool
+func cancel() -> void
+```
+
+#### HTTPManager (Autoload)
+
+Singleton global para operaciones HTTP. Registrado como autoload.
+
+```gdscript
+# Señales
+signal connection_status_changed(connected: bool)
+signal health_check_completed(result: HTTPResult)
+
+# Health checks
+func health_check() -> HTTPResult
+func health_check_detailed() -> HTTPResult
+
+# Peticiones genéricas
+func get_request(endpoint: String) -> HTTPResult
+func post_request(endpoint: String, data: Dictionary = {}) -> HTTPResult
+func put_request(endpoint: String, data: Dictionary = {}) -> HTTPResult
+func delete_request(endpoint: String) -> HTTPResult
+func patch_request(endpoint: String, data: Dictionary = {}) -> HTTPResult
+
+# Operaciones de mapa
+func get_import_status() -> HTTPResult
+func import_osm(filepath: String, clear_existing: bool = false) -> HTTPResult
+
+# Estado
+var backend_connected: bool { get }
+func is_busy() -> bool
+func cancel_request() -> void
+```
+
+**Uso:**
+
+```gdscript
+# Health check
 var result := await HTTPManager.health_check()
 if result.success:
     print("Backend conectado!")
-
-# Health check detallado
-var detailed := await HTTPManager.health_check_detailed()
-if detailed.success:
-    print("Sistema info: ", detailed.data)
-
-# GET request
-var response := await HTTPManager.get_request("/map/import/status")
-
-# POST request con datos
-var import_result := await HTTPManager.post_request("/map/import", {
-    "filepath": "talavera.osm",
-    "clear_existing": true
-})
-```
-
-### Manejo de errores
-
-```gdscript
-var result := await HTTPManager.get_request("/some/endpoint")
-
-if result.success:
-    # Procesar datos
-    var data = result.data
-    print("Status: ", result.status_code)
 else:
-    # Manejar error
-    match result.error_type:
-        HTTPResult.ErrorType.CONNECTION_REFUSED:
-            print("No se puede conectar al servidor")
-        HTTPResult.ErrorType.TIMEOUT:
-            print("Timeout de conexión")
-        HTTPResult.ErrorType.HTTP_ERROR:
-            print("Error HTTP: ", result.status_code)
-        _:
-            print("Error: ", result.error_message)
+    print("Error: ", result.error_message)
+
+# Petición GET
+var nodes := await HTTPManager.get_request("/map/nodes?limit=100")
+if nodes.success:
+    for node in nodes.data.items:
+        print(node)
 ```
 
-### Utilidades JSON
+---
+
+### Modelos de Datos
+
+#### NodeData
+
+Representa un nodo de la red vial (intersección, semáforo, etc.).
 
 ```gdscript
-# Parseo seguro
-var parse_result := JsonUtils.parse(json_string)
-if parse_result.success:
-    var data = parse_result.data
+class_name NodeData
+extends RefCounted
 
-# Obtener valores con defaults
-var name := JsonUtils.get_string(dict, "name", "Unknown")
-var count := JsonUtils.get_int(dict, "count", 0)
+# Tipos de nodo
+enum NodeType {
+    INTERSECTION,     # Intersección
+    TRAFFIC_LIGHT,    # Semáforo
+    ROUNDABOUT,       # Rotonda
+    DEAD_END,         # Calle sin salida
+    ENTRY_POINT,      # Punto de entrada
+    EXIT_POINT,       # Punto de salida
+    UNKNOWN           # Desconocido
+}
 
-# Acceso a valores anidados
-var city := JsonUtils.get_nested(dict, "address.city", "N/A")
+# Propiedades
+var id: int
+var name: String
+var node_type: NodeType
+var longitude: float
+var latitude: float
+var is_active: bool
+var metadata: Dictionary
+
+# Métodos
+static func from_dict(data: Dictionary) -> NodeData
+func to_dict() -> Dictionary
+func get_position_vector2() -> Vector2  # (lon, lat)
+func get_type_string() -> String
+func has_valid_position() -> bool
 ```
+
+#### EdgeData
+
+Representa un segmento de carretera que conecta dos nodos.
+
+```gdscript
+class_name EdgeData
+extends RefCounted
+
+# Tipos de carretera
+enum RoadType {
+    MOTORWAY, MOTORWAY_LINK,      # Autopista
+    TRUNK, TRUNK_LINK,            # Autovía
+    PRIMARY, PRIMARY_LINK,        # Primaria
+    SECONDARY, SECONDARY_LINK,    # Secundaria
+    TERTIARY, TERTIARY_LINK,      # Terciaria
+    RESIDENTIAL,                  # Residencial
+    SERVICE,                      # Servicio
+    UNCLASSIFIED,                 # Sin clasificar
+    LIVING_STREET,                # Zona residencial
+    UNKNOWN                       # Desconocido
+}
+
+# Propiedades
+var id: int
+var name: String
+var start_node_id: int
+var end_node_id: int
+var road_type: RoadType
+var geometry: Array          # [[lon, lat], ...]
+var length: float            # metros
+var max_speed: int           # km/h
+var lanes: int
+var one_way: bool
+var is_active: bool
+var metadata: Dictionary
+
+# Métodos
+static func from_dict(data: Dictionary) -> EdgeData
+func to_dict() -> Dictionary
+func get_geometry_vectors() -> Array[Vector2]
+func get_start_position() -> Vector2
+func get_end_position() -> Vector2
+func get_center_position() -> Vector2
+func get_road_color() -> Color
+func has_valid_geometry() -> bool
+```
+
+#### RoadNetwork
+
+Contenedor para la red vial completa con indexación.
+
+```gdscript
+class_name RoadNetwork
+extends RefCounted
+
+# Propiedades
+var nodes: Dictionary        # int -> NodeData
+var edges: Dictionary        # int -> EdgeData
+var edges_by_start_node: Dictionary  # int -> Array[EdgeData]
+var edges_by_end_node: Dictionary    # int -> Array[EdgeData]
+var bounds_min: Vector2      # (min_lon, min_lat)
+var bounds_max: Vector2      # (max_lon, max_lat)
+
+# Operaciones CRUD
+func add_node(node: NodeData) -> void
+func add_nodes(node_list: Array) -> void
+func add_edge(edge: EdgeData) -> void
+func add_edges(edge_list: Array) -> void
+func clear() -> void
+
+# Consultas
+func get_node(id: int) -> NodeData
+func get_edge(id: int) -> EdgeData
+func get_outgoing_edges(node_id: int) -> Array
+func get_incoming_edges(node_id: int) -> Array
+func get_connected_edges(node_id: int) -> Array
+
+func get_node_ids() -> Array
+func get_edge_ids() -> Array
+func get_node_count() -> int
+func get_edge_count() -> int
+
+func get_nodes_by_type(node_type: NodeData.NodeType) -> Array[NodeData]
+func get_edges_by_type(road_type: EdgeData.RoadType) -> Array[EdgeData]
+func find_nodes_in_bounds(min_pos: Vector2, max_pos: Vector2) -> Array[NodeData]
+
+# Estadísticas
+func get_center() -> Vector2
+func get_extent() -> Vector2
+func get_stats() -> Dictionary
+func validate() -> Dictionary  # Retorna {valid, issues, orphan_nodes}
+
+func is_empty() -> bool
+func has_data() -> bool
+```
+
+---
+
+### Gestión de Red Vial
+
+#### NetworkManager (Autoload)
+
+Gestiona la carga y caché de datos de la red vial. Registrado como autoload.
+
+```gdscript
+# Señales
+signal loading_started()
+signal loading_progress(progress: float, message: String)
+signal loading_completed(network: RoadNetwork)
+signal loading_failed(error: String)
+signal network_cleared()
+
+# Estados de carga
+enum LoadingState { IDLE, LOADING_NODES, LOADING_EDGES, COMPLETED, FAILED }
+
+# Propiedades
+var state: LoadingState
+var network: RoadNetwork
+var is_loaded: bool
+var last_error: String
+
+# Métodos
+func load_network(clear_existing: bool = true) -> bool
+func clear_network() -> void
+func is_loading() -> bool
+func get_loading_progress() -> float  # 0.0 a 1.0
+
+# Accesos de conveniencia
+func get_network_node(id: int) -> NodeData
+func get_network_edge(id: int) -> EdgeData
+func get_network_stats() -> Dictionary
+
+# Configuración
+func set_page_size(size: int) -> void
+func set_max_retries(retries: int) -> void
+```
+
+**Uso:**
+
+```gdscript
+# Conectar a señales
+NetworkManager.loading_started.connect(_on_loading_started)
+NetworkManager.loading_progress.connect(_on_loading_progress)
+NetworkManager.loading_completed.connect(_on_loading_completed)
+NetworkManager.loading_failed.connect(_on_loading_failed)
+
+# Cargar red
+await NetworkManager.load_network()
+
+# Acceder a datos
+if NetworkManager.is_loaded:
+    var stats := NetworkManager.get_network_stats()
+    print("Nodos: ", stats.node_count)
+    print("Aristas: ", stats.edge_count)
+
+    # Acceder a nodo/arista específico
+    var node := NetworkManager.get_network_node(123)
+    var edge := NetworkManager.get_network_edge(456)
+```
+
+---
+
+### Conversión de Coordenadas
+
+#### CoordinateConverter
+
+Convierte coordenadas GPS (EPSG:4326) a espacio 3D de Godot.
+
+**Mapeo de Sistema de Coordenadas:**
+
+| GPS                | Godot               |
+|--------------------|---------------------|
+| Longitud (Este+)   | X (positivo = Este) |
+| Latitud (Norte+)   | Z (positivo = Sur)  |
+| Elevación          | Y (arriba)          |
+| Punto central      | Origen (0, 0, 0)    |
+
+```gdscript
+class_name CoordinateConverter
+extends RefCounted
+
+# Constantes
+const METERS_PER_DEGREE_LAT: float = 111320.0
+const EARTH_RADIUS_METERS: float = 6371000.0
+
+# Propiedades
+var center_longitude: float
+var center_latitude: float
+var bounds_min: Vector2  # (min_lon, min_lat)
+var bounds_max: Vector2  # (max_lon, max_lat)
+
+# Inicialización
+func set_center(longitude: float, latitude: float) -> void
+func set_bounds(min_lon: float, min_lat: float, max_lon: float, max_lat: float) -> void
+func set_bounds_from_network(network: RoadNetwork) -> void
+
+# Conversión directa (GPS -> Godot)
+func gps_to_godot(longitude: float, latitude: float, elevation: float = 0.0) -> Vector3
+func gps_to_godot_v2(gps_coords: Vector2, elevation: float = 0.0) -> Vector3
+
+# Conversión inversa (Godot -> GPS)
+func godot_to_gps(position: Vector3) -> Vector2  # (lon, lat)
+func godot_to_gps_with_elevation(position: Vector3) -> Vector3  # (lon, lat, elevation)
+
+# Conversión por lotes
+func batch_gps_to_godot(gps_coords: Array, elevation: float = 0.0) -> Array[Vector3]
+func batch_godot_to_gps(positions: Array[Vector3]) -> Array[Vector2]
+
+# Cálculo de distancia (Haversine)
+func gps_distance_meters(lon1: float, lat1: float, lon2: float, lat2: float) -> float
+func gps_distance_meters_v2(point1: Vector2, point2: Vector2) -> float
+
+# Utilidades
+func get_bounds_size_meters() -> Vector2  # (ancho, alto) en metros
+func get_godot_bounds() -> Dictionary  # {min, max, size}
+func is_initialized() -> bool
+func get_center_gps() -> Vector2
+func get_meters_per_degree_lon() -> float
+```
+
+**Uso:**
+
+```gdscript
+# Inicializar con punto central
+var converter := CoordinateConverter.new()
+converter.set_center(-4.8300, 39.9600)  # Talavera de la Reina
+
+# O inicializar desde los límites de la red
+converter.set_bounds_from_network(NetworkManager.network)
+
+# Convertir GPS a Godot
+var godot_pos := converter.gps_to_godot(-4.8293, 39.9579)  # Plaza del Pan
+print(godot_pos)  # Vector3(x, 0, z) en metros desde el centro
+
+# Convertir Godot a GPS
+var gps_coords := converter.godot_to_gps(godot_pos)
+print(gps_coords)  # Vector2(-4.8293, 39.9579)
+
+# Conversión por lotes
+var gps_points := [
+    Vector2(-4.8293, 39.9579),
+    Vector2(-4.8315, 39.9589),
+]
+var godot_positions := converter.batch_gps_to_godot(gps_points)
+
+# Calcular distancia
+var distance := converter.gps_distance_meters(-4.8293, 39.9579, -4.8315, 39.9589)
+print("Distancia: ", distance, " metros")
+```
+
+---
+
+### Utilidades
+
+#### JsonUtils
+
+Utilidades de parseo JSON seguro.
+
+```gdscript
+class_name JsonUtils
+extends RefCounted
+
+# Clase de resultado de parseo
+class ParseResult:
+    var success: bool
+    var data: Variant
+    var error: String
+    var error_line: int
+
+# Parseo
+static func parse(json_string: String) -> ParseResult
+static func parse_or_default(json_string: String, default: Variant = null) -> Variant
+static func stringify(data: Variant, pretty: bool = false) -> String
+
+# Extracción segura de valores
+static func get_value(dict: Dictionary, key: String, default: Variant = null) -> Variant
+static func get_nested(dict: Dictionary, path: String, default: Variant = null) -> Variant
+static func get_string(dict: Dictionary, key: String, default: String = "") -> String
+static func get_int(dict: Dictionary, key: String, default: int = 0) -> int
+static func get_float(dict: Dictionary, key: String, default: float = 0.0) -> float
+static func get_bool(dict: Dictionary, key: String, default: bool = false) -> bool
+static func get_array(dict: Dictionary, key: String, default: Array = []) -> Array
+static func get_dict(dict: Dictionary, key: String, default: Dictionary = {}) -> Dictionary
+
+# Operaciones de diccionario
+static func merge(base: Dictionary, overlay: Dictionary) -> Dictionary
+static func deep_merge(base: Dictionary, overlay: Dictionary) -> Dictionary
+static func to_camel_case(dict: Dictionary) -> Dictionary
+static func to_snake_case(dict: Dictionary) -> Dictionary
+```
+
+**Uso:**
+
+```gdscript
+# Extracción segura de valores
+var name := JsonUtils.get_string(response, "name", "Desconocido")
+var count := JsonUtils.get_int(response, "count", 0)
+var items := JsonUtils.get_array(response, "items", [])
+
+# Acceso anidado
+var city := JsonUtils.get_nested(response, "address.city", "N/A")
+
+# Parsear JSON de forma segura
+var result := JsonUtils.parse(json_string)
+if result.success:
+    print(result.data)
+else:
+    print("Error: ", result.error)
+```
+
+#### UILogger
+
+Utilidad de logging basado en BBCode para RichTextLabel.
+
+```gdscript
+class_name UILogger
+extends RefCounted
+
+# Inicializar
+func _init(log_output: RichTextLabel) -> void
+
+# Métodos de logging
+func info(message: String) -> void      # Color por defecto
+func success(message: String) -> void   # Verde
+func error(message: String) -> void     # Rojo
+func warning(message: String) -> void   # Amarillo
+func debug(message: String) -> void     # Gris (solo en DEBUG_MODE)
+func colored(message: String, color: String) -> void
+
+# Utilidades
+func clear() -> void
+func separator(char: String = "-", length: int = 40) -> void
+```
+
+**Uso:**
+
+```gdscript
+@onready var log_text: RichTextLabel = $LogText
+var _logger: UILogger
+
+func _ready() -> void:
+    _logger = UILogger.new(log_text)
+    _logger.info("Aplicación iniciada")
+    _logger.success("Conectado al backend")
+    _logger.warning("Red lenta")
+    _logger.error("Conexión fallida")
+```
+
+---
 
 ## Escenas de Prueba
 
-### test_connection.tscn
+### Test Connection (`test_connection.tscn`)
 
-Proporciona pruebas completas del cliente HTTP:
+Pruebas de conectividad HTTP con el backend:
 
-| Test | Descripción |
-|------|-------------|
-| Health Check | Verifica endpoint `/api/health` |
-| Detailed Health | Verifica endpoint `/api/health/detailed` |
-| 404 Error | Prueba manejo de errores 404 |
-| Connection Refused | Prueba timeout y conexión rechazada |
+- Health check básico (`/health`)
+- Health check detallado (`/health/detailed`)
+- Manejo de errores 404
+- Manejo de conexión rechazada
+- Ejecutar todas las pruebas secuencialmente
 
-Para ejecutar:
-1. Desde la escena principal, clic en "Open Test Scene"
-2. Clic en "Run All Tests" para ejecutar todas las pruebas
-3. O ejecutar pruebas individuales con los botones correspondientes
+### Test Load Network (`test_load_network.tscn`)
+
+Pruebas de carga de datos de red vial:
+
+- Cargar red completa con paginación
+- Seguimiento de progreso
+- Mostrar estadísticas de red
+- Validar integridad de la red
+- Limpiar datos de red
+
+### Test Coordinates (`test_coordinates.tscn`)
+
+Pruebas de conversión de coordenadas:
+
+- Inicialización del convertidor
+- Coordenadas conocidas (monumentos de Talavera)
+- Precisión de ida y vuelta (GPS → Godot → GPS)
+- Comparación de cálculo de distancia
+- Conversión por lotes
+- Integración con límites de red
+
+---
+
+## Ejemplos de Uso
+
+### Flujo de Trabajo Completo
+
+```gdscript
+extends Node
+
+func _ready() -> void:
+    # 1. Verificar conexión al backend
+    var health := await HTTPManager.health_check()
+    if not health.success:
+        push_error("Backend no disponible")
+        return
+
+    # 2. Cargar red vial
+    NetworkManager.loading_completed.connect(_on_network_loaded)
+    await NetworkManager.load_network()
+
+func _on_network_loaded(network: RoadNetwork) -> void:
+    # 3. Configurar convertidor de coordenadas
+    var converter := CoordinateConverter.new()
+    converter.set_bounds_from_network(network)
+
+    # 4. Convertir todos los nodos a posiciones de Godot
+    for node_id in network.get_node_ids():
+        var node := network.get_node(node_id)
+        var godot_pos := converter.gps_to_godot(node.longitude, node.latitude)
+        _spawn_node_visual(node, godot_pos)
+
+    # 5. Convertir todas las aristas
+    for edge_id in network.get_edge_ids():
+        var edge := network.get_edge(edge_id)
+        var points := converter.batch_gps_to_godot(edge.geometry)
+        _spawn_road_visual(edge, points)
+
+func _spawn_node_visual(node: NodeData, position: Vector3) -> void:
+    # Crear visualización 3D para el nodo
+    pass
+
+func _spawn_road_visual(edge: EdgeData, points: Array[Vector3]) -> void:
+    # Crear visualización 3D para el segmento de carretera
+    pass
+```
+
+---
+
+## API Reference
+
+### Singletons Autoload
+
+| Nombre           | Acceso Global     | Descripción                      |
+|------------------|-------------------|----------------------------------|
+| `HTTPManager`    | `HTTPManager`     | Comunicación HTTP                |
+| `NetworkManager` | `NetworkManager`  | Gestión de datos de red vial     |
+
+### Clases (class_name)
+
+| Clase                | Propósito                                |
+|----------------------|------------------------------------------|
+| `Config`             | Constantes de configuración global       |
+| `HTTPResult`         | Wrapper de respuesta HTTP                |
+| `HTTPClient2`        | Cliente HTTP de bajo nivel               |
+| `NodeData`           | Datos de nodo de red vial                |
+| `EdgeData`           | Datos de arista de red vial              |
+| `RoadNetwork`        | Contenedor de red completa               |
+| `CoordinateConverter`| Conversión de coordenadas GPS a Godot    |
+| `JsonUtils`          | Utilidades de parseo JSON                |
+| `UILogger`           | Utilidad de logging para RichTextLabel   |
+
+---
 
 ## Endpoints del Backend
 
-| Endpoint | Método | Descripción |
-|----------|--------|-------------|
-| `/api/health` | GET | Health check básico |
-| `/api/health/detailed` | GET | Health check con info del sistema |
-| `/api/map/import/status` | GET | Estado del sistema de importación |
-| `/api/map/import` | POST | Importar archivo OSM |
-| `/ws/simulation` | WebSocket | Comunicación en tiempo real |
+| Endpoint               | Método | Descripción                    |
+|------------------------|--------|--------------------------------|
+| `/api/health`          | GET    | Health check básico            |
+| `/api/health/detailed` | GET    | Health check con info sistema  |
+| `/api/map/nodes`       | GET    | Obtener nodos (paginado)       |
+| `/api/map/edges`       | GET    | Obtener aristas (paginado)     |
+| `/api/map/import`      | POST   | Importar archivo OSM           |
+| `/api/map/import/status`| GET   | Estado de importación          |
+| `/ws/simulation`       | WS     | Comunicación en tiempo real    |
 
-## Señales
-
-### HTTPManager
-
-```gdscript
-# Emitida cuando cambia el estado de conexión
-signal connection_status_changed(is_connected: bool)
-
-# Emitida cuando se completa un health check
-signal health_check_completed(result: HTTPResult)
-```
-
-### Ejemplo de uso:
-
-```gdscript
-func _ready():
-    HTTPManager.connection_status_changed.connect(_on_connection_changed)
-
-func _on_connection_changed(is_connected: bool):
-    if is_connected:
-        print("Conectado al backend")
-    else:
-        print("Desconectado del backend")
-```
-
-## Próximos pasos (Sprint 1.2+)
-
-- [ ] Cliente WebSocket para comunicación en tiempo real
-- [ ] Visualización 3D del mapa
-- [ ] Renderizado de vehículos
-- [ ] Controles de simulación
+---
 
 ## Tecnologías
 
-| Tecnología | Versión | Propósito |
-|------------|---------|-----------|
-| Godot | 4.5+ | Motor de juego/visualización |
-| GDScript | 2.0 | Lenguaje de scripting |
-| HTTP/REST | - | Comunicación con backend |
-| WebSocket | - | Comunicación en tiempo real |
+| Tecnología | Versión | Propósito                        |
+|------------|---------|----------------------------------|
+| Godot      | 4.5+    | Motor de juego/visualización     |
+| GDScript   | 2.0     | Lenguaje de scripting            |
+| HTTP/REST  | -       | Comunicación con backend         |
+| GeoJSON    | -       | Formato de datos geográficos     |
+| WebSocket  | -       | Comunicación en tiempo real      |
+
+---
 
 ## Licencia
 
-Este proyecto es parte del Trabajo de Fin de Grado (TFG) sobre Gemelos Digitales.
+TFG - Universidad de Castilla-La Mancha
