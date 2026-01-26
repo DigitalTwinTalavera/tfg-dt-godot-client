@@ -53,7 +53,11 @@ text = "Check Health"
 
 [node name="OpenTestSceneButton" type="Button" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2
-text = "Open Test Scene"
+text = "HTTP Connection Test"
+
+[node name="OpenNetworkTestButton" type="Button" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Network Loading Test"
 
 [node name="HSeparator2" type="HSeparator" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2

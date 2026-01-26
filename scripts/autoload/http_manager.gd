@@ -4,7 +4,7 @@ extends Node
 
 
 ## Signal emitted when backend connection status changes
-signal connection_status_changed(is_connected: bool)
+signal connection_status_changed(connected: bool)
 
 ## Signal emitted when health check completes
 signal health_check_completed(result: HTTPResult)
@@ -38,7 +38,7 @@ func _log_startup() -> void:
 
 
 ## Check if backend is reachable
-var is_connected: bool:
+var backend_connected: bool:
 	get:
 		return _is_backend_connected
 

@@ -95,7 +95,7 @@ func _make_request(method: int, endpoint: String, body: String, headers: PackedS
 		return HTTPResult.error("Failed to initiate request (error code: %d)" % error, HTTPResult.ErrorType.UNKNOWN)
 
 	# Start timeout timer as backup (HTTPRequest has its own timeout but this is extra safety)
-	_timeout_timer.start(_timeout + 1.0)
+	_timeout_timer.start(_timeout + Config.HTTP_TIMEOUT_BUFFER)
 
 	# Wait for completion
 	var result: HTTPResult = await request_completed
@@ -138,7 +138,6 @@ func _on_request_completed(http_result: int, response_code: int, headers: Packed
 	else:
 		var body_string := body.get_string_from_utf8()
 		var parsed_data: Variant = null
-		var parse_error := ""
 
 		# Try to parse JSON if body is not empty
 		if not body_string.is_empty():
@@ -146,8 +145,6 @@ func _on_request_completed(http_result: int, response_code: int, headers: Packed
 			var json_error := json.parse(body_string)
 			if json_error == OK:
 				parsed_data = json.data
-			else:
-				parse_error = "JSON parse error at line %d" % json.get_error_line()
 
 		# Check if status code indicates success (2xx)
 		if response_code >= 200 and response_code < 300:
