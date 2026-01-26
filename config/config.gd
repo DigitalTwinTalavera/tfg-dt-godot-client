@@ -35,6 +35,39 @@ class Endpoints:
 	const HEALTH_DETAILED: String = "/health/detailed"
 	const MAP_IMPORT: String = "/map/import"
 	const MAP_IMPORT_STATUS: String = "/map/import/status"
+	const MAP_NODES: String = "/map/nodes"
+	const MAP_EDGES: String = "/map/edges"
+
+
+## Network loading configuration
+const NETWORK_PAGE_SIZE: int = 1000
+const NETWORK_MAX_RETRIES: int = 3
+const NETWORK_RETRY_DELAY: float = 1.0
+const NETWORK_PAGINATION_DELAY: float = 0.01  # Delay between paginated requests
+const NETWORK_PROGRESS_NODES_WEIGHT: float = 0.5  # Progress weight for nodes loading
+const NETWORK_PROGRESS_EDGES_WEIGHT: float = 0.5  # Progress weight for edges loading
+
+## HTTP internal configuration
+const HTTP_TIMEOUT_BUFFER: float = 1.0  # Extra buffer added to timeout timer
+
+
+## Road type colors for visualization
+class RoadColors:
+	const MOTORWAY: Color = Color(0.9, 0.4, 0.1)  # Orange
+	const MOTORWAY_LINK: Color = Color(0.9, 0.4, 0.1)
+	const TRUNK: Color = Color(0.9, 0.6, 0.2)  # Light orange
+	const TRUNK_LINK: Color = Color(0.9, 0.6, 0.2)
+	const PRIMARY: Color = Color(0.9, 0.8, 0.3)  # Yellow
+	const PRIMARY_LINK: Color = Color(0.9, 0.8, 0.3)
+	const SECONDARY: Color = Color(0.7, 0.7, 0.7)  # Light gray
+	const SECONDARY_LINK: Color = Color(0.7, 0.7, 0.7)
+	const TERTIARY: Color = Color(0.8, 0.8, 0.8)  # Lighter gray
+	const TERTIARY_LINK: Color = Color(0.8, 0.8, 0.8)
+	const RESIDENTIAL: Color = Color(1.0, 1.0, 1.0)  # White
+	const SERVICE: Color = Color(0.6, 0.6, 0.6)  # Gray
+	const UNCLASSIFIED: Color = Color(0.5, 0.5, 0.5)  # Dark gray
+	const LIVING_STREET: Color = Color(0.5, 0.5, 0.5)
+	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)  # Default dark gray
 
 
 ## Application settings

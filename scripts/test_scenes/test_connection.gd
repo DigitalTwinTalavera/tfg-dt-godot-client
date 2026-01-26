@@ -16,14 +16,16 @@ extends Control
 var _test_count: int = 0
 var _pass_count: int = 0
 var _fail_count: int = 0
+var _logger: UILogger
 
 
 func _ready() -> void:
+	_logger = UILogger.new(log_text)
 	_connect_signals()
-	_log_info("Test Connection Scene Ready")
-	_log_info("Backend URL: %s" % Config.base_url)
-	_log_info("API URL: %s" % Config.api_url)
-	_log_info("")
+	_logger.info("Test Connection Scene Ready")
+	_logger.info("Backend URL: %s" % Config.base_url)
+	_logger.info("API URL: %s" % Config.api_url)
+	_logger.info("")
 
 
 func _connect_signals() -> void:
@@ -49,7 +51,7 @@ func _on_run_all_pressed() -> void:
 	_pass_count = 0
 	_fail_count = 0
 
-	_log_info("========== Running All Tests ==========")
+	_logger.info("========== Running All Tests ==========")
 	_set_buttons_disabled(true)
 
 	await _test_health_check()
@@ -57,14 +59,14 @@ func _on_run_all_pressed() -> void:
 	await _test_404_error()
 	await _test_invalid_endpoint()
 
-	_log_info("")
-	_log_info("========== Test Results ==========")
-	_log_info("Total: %d | Passed: %d | Failed: %d" % [_test_count, _pass_count, _fail_count])
+	_logger.info("")
+	_logger.info("========== Test Results ==========")
+	_logger.info("Total: %d | Passed: %d | Failed: %d" % [_test_count, _pass_count, _fail_count])
 
 	if _fail_count == 0:
-		_log_success("All tests passed!")
+		_logger.success("All tests passed!")
 	else:
-		_log_error("%d test(s) failed" % _fail_count)
+		_logger.error("%d test(s) failed" % _fail_count)
 
 	_set_buttons_disabled(false)
 	_update_status()
@@ -108,7 +110,7 @@ func _on_back_pressed() -> void:
 
 ## Test: Basic health check
 func _test_health_check() -> void:
-	_log_info("--- Test: Basic Health Check ---")
+	_logger.info("--- Test: Basic Health Check ---")
 	status_label.text = "Testing: Basic Health Check..."
 
 	var result := await HTTPManager.health_check()
@@ -116,18 +118,18 @@ func _test_health_check() -> void:
 	_test_count += 1
 	if result.success and result.status_code == 200:
 		_pass_count += 1
-		_log_success("PASS: Health check returned 200 OK")
-		_log_info("Response: %s" % str(result.data))
+		_logger.success("PASS: Health check returned 200 OK")
+		_logger.info("Response: %s" % str(result.data))
 	else:
 		_fail_count += 1
-		_log_error("FAIL: Health check failed - %s" % result.error_message)
+		_logger.error("FAIL: Health check failed - %s" % result.error_message)
 
 	_update_status()
 
 
 ## Test: Detailed health check
 func _test_detailed_health() -> void:
-	_log_info("--- Test: Detailed Health Check ---")
+	_logger.info("--- Test: Detailed Health Check ---")
 	status_label.text = "Testing: Detailed Health Check..."
 
 	var result := await HTTPManager.health_check_detailed()
@@ -135,21 +137,21 @@ func _test_detailed_health() -> void:
 	_test_count += 1
 	if result.success and result.status_code == 200:
 		_pass_count += 1
-		_log_success("PASS: Detailed health check returned 200 OK")
+		_logger.success("PASS: Detailed health check returned 200 OK")
 		if result.data is Dictionary:
-			_log_info("Response data:")
+			_logger.info("Response data:")
 			for key in result.data:
-				_log_info("  %s: %s" % [key, str(result.data[key])])
+				_logger.info("  %s: %s" % [key, str(result.data[key])])
 	else:
 		_fail_count += 1
-		_log_error("FAIL: Detailed health check failed - %s" % result.error_message)
+		_logger.error("FAIL: Detailed health check failed - %s" % result.error_message)
 
 	_update_status()
 
 
 ## Test: 404 error handling
 func _test_404_error() -> void:
-	_log_info("--- Test: 404 Error Handling ---")
+	_logger.info("--- Test: 404 Error Handling ---")
 	status_label.text = "Testing: 404 Error Handling..."
 
 	var result := await HTTPManager.get_request("/nonexistent-endpoint-12345")
@@ -157,21 +159,21 @@ func _test_404_error() -> void:
 	_test_count += 1
 	if not result.success and result.status_code == 404:
 		_pass_count += 1
-		_log_success("PASS: 404 error correctly detected")
-		_log_info("Error message: %s" % result.error_message)
+		_logger.success("PASS: 404 error correctly detected")
+		_logger.info("Error message: %s" % result.error_message)
 	elif result.success:
 		_fail_count += 1
-		_log_error("FAIL: Expected 404 but got success")
+		_logger.error("FAIL: Expected 404 but got success")
 	else:
 		# Could be connection refused if backend is down
-		_log_warning("SKIP: Backend not reachable - %s" % result.error_message)
+		_logger.warning("SKIP: Backend not reachable - %s" % result.error_message)
 
 	_update_status()
 
 
 ## Test: Invalid endpoint
 func _test_invalid_endpoint() -> void:
-	_log_info("--- Test: Invalid Method Response ---")
+	_logger.info("--- Test: Invalid Method Response ---")
 	status_label.text = "Testing: Invalid Endpoint..."
 
 	# Try to POST to a GET-only endpoint
@@ -180,20 +182,20 @@ func _test_invalid_endpoint() -> void:
 	_test_count += 1
 	if not result.success and result.status_code == 405:
 		_pass_count += 1
-		_log_success("PASS: 405 Method Not Allowed correctly detected")
+		_logger.success("PASS: 405 Method Not Allowed correctly detected")
 	elif result.success:
 		# Some servers might accept POST on health endpoint
-		_log_warning("WARN: Server accepted POST on /health (may be valid)")
+		_logger.warning("WARN: Server accepted POST on /health (may be valid)")
 		_pass_count += 1
 	else:
-		_log_info("Response: HTTP %d - %s" % [result.status_code, result.error_message])
+		_logger.info("Response: HTTP %d - %s" % [result.status_code, result.error_message])
 
 	_update_status()
 
 
 ## Test: Connection refused (to unreachable port)
 func _test_connection_refused() -> void:
-	_log_info("--- Test: Connection Refused Handling ---")
+	_logger.info("--- Test: Connection Refused Handling ---")
 	status_label.text = "Testing: Connection Refused..."
 
 	# Create a temporary client pointing to an invalid port
@@ -207,33 +209,17 @@ func _test_connection_refused() -> void:
 	_test_count += 1
 	if not result.success and result.error_type == HTTPResult.ErrorType.CONNECTION_REFUSED:
 		_pass_count += 1
-		_log_success("PASS: Connection refused correctly detected")
-		_log_info("Error type: %s" % HTTPResult.ErrorType.keys()[result.error_type])
+		_logger.success("PASS: Connection refused correctly detected")
+		_logger.info("Error type: %s" % HTTPResult.ErrorType.keys()[result.error_type])
 	elif not result.success:
 		_pass_count += 1
-		_log_success("PASS: Connection error detected (%s)" % result.error_message)
+		_logger.success("PASS: Connection error detected (%s)" % result.error_message)
 	else:
 		_fail_count += 1
-		_log_error("FAIL: Expected connection error but got success")
+		_logger.error("FAIL: Expected connection error but got success")
 
 	_update_status()
 
 
 func _update_status() -> void:
 	status_label.text = "Tests: %d | Passed: %d | Failed: %d" % [_test_count, _pass_count, _fail_count]
-
-
-func _log_info(message: String) -> void:
-	log_text.append_text(message + "\n")
-
-
-func _log_success(message: String) -> void:
-	log_text.append_text("[color=green]%s[/color]\n" % message)
-
-
-func _log_error(message: String) -> void:
-	log_text.append_text("[color=red]%s[/color]\n" % message)
-
-
-func _log_warning(message: String) -> void:
-	log_text.append_text("[color=yellow]%s[/color]\n" % message)
