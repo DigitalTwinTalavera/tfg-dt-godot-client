@@ -70,6 +70,28 @@ class RoadColors:
 	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)  # Default dark gray
 
 
+## Node type colors for visualization
+class NodeColors:
+	const INTERSECTION: Color = Color(0.5, 0.5, 0.5)      # Gray #808080
+	const TRAFFIC_LIGHT: Color = Color(1.0, 0.0, 0.0)     # Red #FF0000
+	const ROUNDABOUT: Color = Color(0.0, 0.5, 1.0)        # Blue #0080FF
+	const DEAD_END: Color = Color(0.25, 0.25, 0.25)       # Dark Gray #404040
+	const ENTRY_POINT: Color = Color(0.0, 1.0, 0.0)       # Green #00FF00
+	const EXIT_POINT: Color = Color(1.0, 0.65, 0.0)       # Orange #FFA500
+	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)           # Gray (default)
+
+
+## Node rendering configuration
+class NodeRendering:
+	const DEFAULT_RADIUS: float = 3.0           # Node sphere radius in meters
+	const SPHERE_RADIAL_SEGMENTS: int = 16      # Low-poly for performance
+	const SPHERE_RINGS: int = 8                 # Low-poly for performance
+	const LOD_DISTANCE_HIDE: float = 5000.0     # Distance to hide nodes
+	const LOD_DISTANCE_LOW: float = 2000.0      # Distance for low detail
+	const SELECTION_HIGHLIGHT_SCALE: float = 1.3  # Scale when selected
+	const HOVER_HIGHLIGHT_SCALE: float = 1.15   # Scale when hovered
+
+
 ## Coordinate conversion constants
 class Coordinates:
 	## Meters per degree of latitude (approximately constant worldwide)
