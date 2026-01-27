@@ -9,6 +9,7 @@ extends Control
 @onready var open_test_scene_button: Button = $MarginContainer/VBoxContainer/OpenTestSceneButton
 @onready var open_network_test_button: Button = $MarginContainer/VBoxContainer/OpenNetworkTestButton
 @onready var open_coordinate_test_button: Button = $MarginContainer/VBoxContainer/OpenCoordinateTestButton
+@onready var open_node_renderer_button: Button = $MarginContainer/VBoxContainer/OpenNodeRendererButton
 @onready var result_text: RichTextLabel = $MarginContainer/VBoxContainer/ResultText
 
 
@@ -28,6 +29,7 @@ func _connect_signals() -> void:
 	open_test_scene_button.pressed.connect(_on_open_test_scene_pressed)
 	open_network_test_button.pressed.connect(_on_open_network_test_pressed)
 	open_coordinate_test_button.pressed.connect(_on_open_coordinate_test_pressed)
+	open_node_renderer_button.pressed.connect(_on_open_node_renderer_pressed)
 	HTTPManager.connection_status_changed.connect(_on_connection_status_changed)
 
 
@@ -76,6 +78,10 @@ func _on_open_network_test_pressed() -> void:
 
 func _on_open_coordinate_test_pressed() -> void:
 	get_tree().change_scene_to_file("res://scenes/test_scenes/test_coordinates.tscn")
+
+
+func _on_open_node_renderer_pressed() -> void:
+	get_tree().change_scene_to_file("res://scenes/test_scenes/test_node_renderer.tscn")
 
 
 func _on_connection_status_changed(connected: bool) -> void:

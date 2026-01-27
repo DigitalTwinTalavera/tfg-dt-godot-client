@@ -24,12 +24,6 @@ class_name CoordinateConverter
 extends RefCounted
 
 
-## Meters per degree of latitude (approximately constant)
-const METERS_PER_DEGREE_LAT: float = 111320.0
-
-## Earth's radius in meters (for more precise calculations)
-const EARTH_RADIUS_METERS: float = 6371000.0
-
 ## Degrees to radians conversion factor
 const DEG_TO_RAD: float = PI / 180.0
 
@@ -46,7 +40,7 @@ var bounds_min: Vector2 = Vector2.ZERO  # (min_lon, min_lat)
 var bounds_max: Vector2 = Vector2.ZERO  # (max_lon, max_lat)
 
 ## Cached meters per degree at center latitude
-var _meters_per_degree_lon: float = METERS_PER_DEGREE_LAT
+var _meters_per_degree_lon: float = Config.Coordinates.METERS_PER_DEGREE_LAT
 
 ## Whether the converter has been initialized
 var _is_initialized: bool = false
@@ -93,7 +87,7 @@ func set_bounds_from_network(network: RoadNetwork) -> void:
 func _update_scale_factor() -> void:
 	# At the equator, 1 degree lon = 1 degree lat in meters
 	# At higher latitudes, longitude degrees become "smaller"
-	_meters_per_degree_lon = METERS_PER_DEGREE_LAT * cos(center_latitude * DEG_TO_RAD)
+	_meters_per_degree_lon = Config.Coordinates.METERS_PER_DEGREE_LAT * cos(center_latitude * DEG_TO_RAD)
 
 
 ## Convert GPS coordinates (lon, lat) to Godot 3D position
@@ -112,7 +106,7 @@ func gps_to_godot(longitude: float, latitude: float, elevation: float = 0.0) -> 
 
 	# Convert to meters
 	var x := delta_lon * _meters_per_degree_lon  # East-West
-	var z := -delta_lat * METERS_PER_DEGREE_LAT  # North-South (inverted for Godot)
+	var z := -delta_lat * Config.Coordinates.METERS_PER_DEGREE_LAT  # North-South (inverted for Godot)
 
 	return Vector3(x, elevation, z)
 
@@ -131,7 +125,7 @@ func godot_to_gps(position: Vector3) -> Vector2:
 
 	# Convert from meters to degrees
 	var delta_lon := position.x / _meters_per_degree_lon
-	var delta_lat := -position.z / METERS_PER_DEGREE_LAT  # Inverted back
+	var delta_lat := -position.z / Config.Coordinates.METERS_PER_DEGREE_LAT  # Inverted back
 
 	return Vector2(
 		center_longitude + delta_lon,
@@ -185,7 +179,7 @@ func get_bounds_size_meters() -> Vector2:
 		return Vector2.ZERO
 
 	var width := (bounds_max.x - bounds_min.x) * _meters_per_degree_lon
-	var height := (bounds_max.y - bounds_min.y) * METERS_PER_DEGREE_LAT
+	var height := (bounds_max.y - bounds_min.y) * Config.Coordinates.METERS_PER_DEGREE_LAT
 
 	return Vector2(width, height)
 
@@ -230,7 +224,7 @@ func gps_distance_meters(lon1: float, lat1: float, lon2: float, lat2: float) -> 
 			 sin(delta_lon / 2.0) * sin(delta_lon / 2.0)
 	var c := 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
 
-	return EARTH_RADIUS_METERS * c
+	return Config.Coordinates.EARTH_RADIUS_METERS * c
 
 
 ## Calculate distance between two GPS points given as Vector2(lon, lat)
@@ -245,7 +239,7 @@ func get_meters_per_degree_lon() -> float:
 
 ## Get the constant meters per degree latitude
 func get_meters_per_degree_lat() -> float:
-	return METERS_PER_DEGREE_LAT
+	return Config.Coordinates.METERS_PER_DEGREE_LAT
 
 
 ## Check if converter is initialized
