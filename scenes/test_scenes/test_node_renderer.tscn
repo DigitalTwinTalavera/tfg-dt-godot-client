@@ -1,7 +1,8 @@
-[gd_scene load_steps=6 format=3 uid="uid://test_node_renderer"]
+[gd_scene load_steps=7 format=3 uid="uid://test_node_renderer"]
 
 [ext_resource type="Script" path="res://scripts/test_scenes/test_node_renderer.gd" id="1_test"]
 [ext_resource type="Script" path="res://scripts/renderers/node_renderer.gd" id="2_renderer"]
+[ext_resource type="Script" path="res://scripts/renderers/edge_renderer.gd" id="3_edge_renderer"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
 sky_top_color = Color(0.4, 0.6, 0.8, 1)
@@ -35,6 +36,9 @@ current = true
 fov = 60.0
 far = 50000.0
 
+[node name="EdgeRenderer" type="Node3D" parent="."]
+script = ExtResource("3_edge_renderer")
+
 [node name="NodeRenderer" type="Node3D" parent="."]
 script = ExtResource("2_renderer")
 
@@ -42,15 +46,15 @@ script = ExtResource("2_renderer")
 
 [node name="PanelContainer" type="PanelContainer" parent="UI"]
 offset_right = 280.0
-offset_bottom = 400.0
+offset_bottom = 500.0
 
 [node name="VBoxContainer" type="VBoxContainer" parent="UI/PanelContainer"]
 layout_mode = 2
-theme_override_constants/separation = 10
+theme_override_constants/separation = 8
 
 [node name="TitleLabel" type="Label" parent="UI/PanelContainer/VBoxContainer"]
 layout_mode = 2
-text = "Node Renderer Test"
+text = "Network Renderer Test"
 horizontal_alignment = 1
 
 [node name="HSeparator" type="HSeparator" parent="UI/PanelContainer/VBoxContainer"]
@@ -58,13 +62,13 @@ layout_mode = 2
 
 [node name="StatsLabel" type="Label" parent="UI/PanelContainer/VBoxContainer"]
 layout_mode = 2
-text = "Nodes: 0"
+text = "Nodes: 0 | Edges: 0"
 
 [node name="HSeparator2" type="HSeparator" parent="UI/PanelContainer/VBoxContainer"]
 layout_mode = 2
 
 [node name="NodeInfoLabel" type="RichTextLabel" parent="UI/PanelContainer/VBoxContainer"]
-custom_minimum_size = Vector2(250, 150)
+custom_minimum_size = Vector2(250, 120)
 layout_mode = 2
 bbcode_enabled = true
 text = "Click on a node to see info"
@@ -72,17 +76,34 @@ text = "Click on a node to see info"
 [node name="HSeparator3" type="HSeparator" parent="UI/PanelContainer/VBoxContainer"]
 layout_mode = 2
 
+[node name="VisibilityLabel" type="Label" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Visibility:"
+
+[node name="EdgesCheck" type="CheckBox" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+button_pressed = true
+text = "Show Roads"
+
+[node name="NodesCheck" type="CheckBox" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+button_pressed = true
+text = "Show Nodes"
+
 [node name="LODCheck" type="CheckBox" parent="UI/PanelContainer/VBoxContainer"]
 layout_mode = 2
 text = "Enable LOD"
 
+[node name="HSeparator4" type="HSeparator" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+
 [node name="LoadButton" type="Button" parent="UI/PanelContainer/VBoxContainer"]
 layout_mode = 2
-text = "Load & Render Nodes"
+text = "Load & Render Network"
 
 [node name="ClearButton" type="Button" parent="UI/PanelContainer/VBoxContainer"]
 layout_mode = 2
-text = "Clear Nodes"
+text = "Clear All"
 
 [node name="BackButton" type="Button" parent="UI/PanelContainer/VBoxContainer"]
 layout_mode = 2
