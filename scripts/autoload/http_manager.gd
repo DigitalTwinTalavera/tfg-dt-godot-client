@@ -45,24 +45,17 @@ var backend_connected: bool:
 
 ## Perform a health check against the backend
 func health_check() -> HTTPResult:
-	var result := await _client.get_request(Config.Endpoints.HEALTH)
-
-	var was_connected := _is_backend_connected
-	_is_backend_connected = result.success
-
-	if result.success:
-		_last_health_check = Time.get_unix_time_from_system()
-
-	if was_connected != _is_backend_connected:
-		connection_status_changed.emit(_is_backend_connected)
-
-	health_check_completed.emit(result)
-	return result
+	return await _perform_health_check(Config.Endpoints.HEALTH, true)
 
 
 ## Perform a detailed health check
 func health_check_detailed() -> HTTPResult:
-	var result := await _client.get_request(Config.Endpoints.HEALTH_DETAILED)
+	return await _perform_health_check(Config.Endpoints.HEALTH_DETAILED, false)
+
+
+## Internal helper for health check logic (DRY principle)
+func _perform_health_check(endpoint: String, emit_completed_signal: bool) -> HTTPResult:
+	var result := await _client.get_request(endpoint)
 
 	var was_connected := _is_backend_connected
 	_is_backend_connected = result.success
@@ -72,6 +65,9 @@ func health_check_detailed() -> HTTPResult:
 
 	if was_connected != _is_backend_connected:
 		connection_status_changed.emit(_is_backend_connected)
+
+	if emit_completed_signal:
+		health_check_completed.emit(result)
 
 	return result
 

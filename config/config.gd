@@ -51,23 +51,23 @@ const NETWORK_PROGRESS_EDGES_WEIGHT: float = 0.5  # Progress weight for edges lo
 const HTTP_TIMEOUT_BUFFER: float = 1.0  # Extra buffer added to timeout timer
 
 
-## Road type colors for visualization
+## Road type colors for visualization (matching OSM road hierarchy)
 class RoadColors:
-	const MOTORWAY: Color = Color(0.9, 0.4, 0.1)  # Orange
-	const MOTORWAY_LINK: Color = Color(0.9, 0.4, 0.1)
-	const TRUNK: Color = Color(0.9, 0.6, 0.2)  # Light orange
-	const TRUNK_LINK: Color = Color(0.9, 0.6, 0.2)
-	const PRIMARY: Color = Color(0.9, 0.8, 0.3)  # Yellow
-	const PRIMARY_LINK: Color = Color(0.9, 0.8, 0.3)
-	const SECONDARY: Color = Color(0.7, 0.7, 0.7)  # Light gray
-	const SECONDARY_LINK: Color = Color(0.7, 0.7, 0.7)
-	const TERTIARY: Color = Color(0.8, 0.8, 0.8)  # Lighter gray
-	const TERTIARY_LINK: Color = Color(0.8, 0.8, 0.8)
-	const RESIDENTIAL: Color = Color(1.0, 1.0, 1.0)  # White
-	const SERVICE: Color = Color(0.6, 0.6, 0.6)  # Gray
-	const UNCLASSIFIED: Color = Color(0.5, 0.5, 0.5)  # Dark gray
-	const LIVING_STREET: Color = Color(0.5, 0.5, 0.5)
-	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)  # Default dark gray
+	const MOTORWAY: Color = Color(0.0, 0.2, 0.4)       # Dark Blue #003366
+	const MOTORWAY_LINK: Color = Color(0.0, 0.3, 0.5)  # Slightly lighter
+	const TRUNK: Color = Color(0.0, 0.4, 0.6)          # Medium Blue
+	const TRUNK_LINK: Color = Color(0.0, 0.5, 0.7)
+	const PRIMARY: Color = Color(1.0, 0.8, 0.0)        # Yellow #FFCC00
+	const PRIMARY_LINK: Color = Color(1.0, 0.85, 0.2)
+	const SECONDARY: Color = Color(1.0, 0.53, 0.0)     # Orange #FF8800
+	const SECONDARY_LINK: Color = Color(1.0, 0.6, 0.2)
+	const TERTIARY: Color = Color(1.0, 0.67, 0.27)     # Light Orange #FFAA44
+	const TERTIARY_LINK: Color = Color(1.0, 0.75, 0.4)
+	const RESIDENTIAL: Color = Color(1.0, 1.0, 1.0)    # White #FFFFFF
+	const SERVICE: Color = Color(0.8, 0.8, 0.8)        # Light Gray #CCCCCC
+	const UNCLASSIFIED: Color = Color(0.7, 0.7, 0.7)   # Gray
+	const LIVING_STREET: Color = Color(0.9, 0.9, 0.9)  # Very light gray
+	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)        # Default gray
 
 
 ## Node type colors for visualization
@@ -88,8 +88,45 @@ class NodeRendering:
 	const SPHERE_RINGS: int = 8                 # Low-poly for performance
 	const LOD_DISTANCE_HIDE: float = 5000.0     # Distance to hide nodes
 	const LOD_DISTANCE_LOW: float = 2000.0      # Distance for low detail
+	const LOD_LOW_SCALE: float = 0.5            # Scale factor at low LOD
 	const SELECTION_HIGHLIGHT_SCALE: float = 1.3  # Scale when selected
 	const HOVER_HIGHLIGHT_SCALE: float = 1.15   # Scale when hovered
+	const RAYCAST_MAX_DISTANCE: float = 10000.0 # Max raycast distance for node picking
+
+
+## Edge/Road rendering configuration
+class EdgeRendering:
+	## Road width per lane in meters
+	const LANE_WIDTH: float = 3.0
+
+	## Default road widths based on lane count
+	const WIDTH_1_LANE: float = 3.0   # 1 lane
+	const WIDTH_2_LANES: float = 6.0  # 2 lanes
+	const WIDTH_3_LANES: float = 9.0  # 3 lanes
+	const WIDTH_4_LANES: float = 12.0 # 4+ lanes
+
+	## Road height (thickness) above ground
+	const ROAD_HEIGHT: float = 0.2
+
+	## Road elevation above ground (to avoid z-fighting)
+	const ROAD_ELEVATION: float = 0.1
+
+	## LOD distances
+	const LOD_DISTANCE_HIDE: float = 8000.0      # Distance to hide roads
+	const LOD_DISTANCE_SIMPLIFY: float = 3000.0  # Distance to simplify geometry
+
+	## Geometry simplification
+	const MIN_SEGMENT_LENGTH: float = 5.0        # Minimum segment length in meters
+	const LOD_MIN_SEGMENT_LENGTH: float = 20.0   # Minimum segment for LOD
+
+	## One-way arrow settings
+	const ARROW_SPACING: float = 50.0     # Meters between arrows
+	const ARROW_SIZE: float = 4.0         # Arrow size in meters
+	const ARROW_HEIGHT: float = 0.3       # Arrow height above road
+
+	## Selection/highlight
+	const SELECTION_WIDTH_MULTIPLIER: float = 1.2
+	const HOVER_WIDTH_MULTIPLIER: float = 1.1
 
 
 ## Coordinate conversion constants

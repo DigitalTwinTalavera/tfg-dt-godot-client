@@ -250,7 +250,7 @@ func get_node_at_position(screen_pos: Vector2, camera: Camera3D) -> NodeData:
 
 	var ray_origin := camera.project_ray_origin(screen_pos)
 	var ray_dir := camera.project_ray_normal(screen_pos)
-	var ray_end := ray_origin + ray_dir * 10000.0
+	var ray_end := ray_origin + ray_dir * Config.NodeRendering.RAYCAST_MAX_DISTANCE
 
 	return _raycast_nodes(ray_origin, ray_end)
 
@@ -426,7 +426,7 @@ func update_lod(camera: Camera3D) -> void:
 			inst_transform.basis = Basis.IDENTITY.scaled(Vector3.ZERO)
 		elif distance > Config.NodeRendering.LOD_DISTANCE_LOW:
 			# Reduce scale for distant nodes
-			var scale_factor := 0.5
+			var scale_factor := Config.NodeRendering.LOD_LOW_SCALE
 			inst_transform.basis = Basis.IDENTITY.scaled(Vector3.ONE * scale_factor)
 		else:
 			# Full scale for close nodes
