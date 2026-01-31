@@ -101,7 +101,8 @@ tfg-dt-godot-client/
 │   │   ├── edge_data.gd            # Arista de red vial
 │   │   └── road_network.gd         # Contenedor de red completa
 │   ├── renderers/
-│   │   └── node_renderer.gd        # Renderizado 3D de nodos
+│   │   ├── node_renderer.gd        # Renderizado 3D de nodos
+│   │   └── edge_renderer.gd        # Renderizado 3D de carreteras
 │   ├── utils/
 │   │   ├── json_utils.gd           # Utilidades JSON
 │   │   ├── ui_logger.gd            # Logger para UI
@@ -140,8 +141,9 @@ tfg-dt-godot-client/
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │                     Renderizadores                        │   │
 │  │  NodeRenderer: MultiMesh para nodos 3D                    │   │
-│  │  - Renderizado eficiente de 5000+ nodos                   │   │
-│  │  - Colores por tipo, LOD, selección/hover                 │   │
+│  │  EdgeRenderer: ImmediateMesh para carreteras 3D           │   │
+│  │  - Renderizado eficiente de redes viales completas        │   │
+│  │  - Colores por tipo, ancho por carriles, LOD              │   │
 │  └──────────────────────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────────────────────┤
 │                        Capa HTTP                                 │
@@ -215,14 +217,21 @@ class Endpoints:
 
 ```gdscript
 class RoadColors:
-    const MOTORWAY: Color = Color(0.9, 0.4, 0.1)      # Naranja
-    const TRUNK: Color = Color(0.9, 0.6, 0.2)         # Naranja claro
-    const PRIMARY: Color = Color(0.9, 0.8, 0.3)       # Amarillo
-    const SECONDARY: Color = Color(0.7, 0.7, 0.7)    # Gris claro
-    const TERTIARY: Color = Color(0.8, 0.8, 0.8)     # Gris más claro
-    const RESIDENTIAL: Color = Color(1.0, 1.0, 1.0)  # Blanco
-    const SERVICE: Color = Color(0.6, 0.6, 0.6)      # Gris
-    const UNKNOWN: Color = Color(0.5, 0.5, 0.5)      # Gris oscuro
+    const MOTORWAY: Color = Color(0.0, 0.2, 0.4)       # Azul oscuro #003366
+    const MOTORWAY_LINK: Color = Color(0.0, 0.3, 0.5)  # Ligeramente más claro
+    const TRUNK: Color = Color(0.0, 0.4, 0.6)          # Azul medio
+    const TRUNK_LINK: Color = Color(0.0, 0.5, 0.7)
+    const PRIMARY: Color = Color(1.0, 0.8, 0.0)        # Amarillo #FFCC00
+    const PRIMARY_LINK: Color = Color(1.0, 0.85, 0.2)
+    const SECONDARY: Color = Color(1.0, 0.53, 0.0)     # Naranja #FF8800
+    const SECONDARY_LINK: Color = Color(1.0, 0.6, 0.2)
+    const TERTIARY: Color = Color(1.0, 0.67, 0.27)     # Naranja claro #FFAA44
+    const TERTIARY_LINK: Color = Color(1.0, 0.75, 0.4)
+    const RESIDENTIAL: Color = Color(1.0, 1.0, 1.0)    # Blanco #FFFFFF
+    const SERVICE: Color = Color(0.8, 0.8, 0.8)        # Gris claro #CCCCCC
+    const UNCLASSIFIED: Color = Color(0.7, 0.7, 0.7)   # Gris
+    const LIVING_STREET: Color = Color(0.9, 0.9, 0.9)  # Gris muy claro
+    const UNKNOWN: Color = Color(0.5, 0.5, 0.5)        # Gris por defecto
 ```
 
 ### Constantes de Coordenadas
@@ -259,8 +268,43 @@ class NodeRendering:
     const SPHERE_RINGS: int = 8                    # Low-poly para rendimiento
     const LOD_DISTANCE_HIDE: float = 5000.0        # Distancia para ocultar nodos
     const LOD_DISTANCE_LOW: float = 2000.0         # Distancia para detalle bajo
+    const LOD_LOW_SCALE: float = 0.5               # Factor de escala en LOD bajo
     const SELECTION_HIGHLIGHT_SCALE: float = 1.3   # Escala al seleccionar
     const HOVER_HIGHLIGHT_SCALE: float = 1.15      # Escala al pasar sobre
+    const RAYCAST_MAX_DISTANCE: float = 10000.0    # Distancia máxima de raycast
+```
+
+### Configuración de Renderizado de Carreteras
+
+```gdscript
+class EdgeRendering:
+    # Anchos de carretera por número de carriles
+    const LANE_WIDTH: float = 3.0         # Ancho por carril
+    const WIDTH_1_LANE: float = 3.0       # 1 carril: 3m
+    const WIDTH_2_LANES: float = 6.0      # 2 carriles: 6m
+    const WIDTH_3_LANES: float = 9.0      # 3 carriles: 9m
+    const WIDTH_4_LANES: float = 12.0     # 4+ carriles: 12m
+
+    # Geometría de carreteras
+    const ROAD_HEIGHT: float = 0.2        # Grosor de carretera
+    const ROAD_ELEVATION: float = 0.1     # Elevación sobre el suelo
+
+    # Distancias LOD
+    const LOD_DISTANCE_HIDE: float = 8000.0       # Ocultar carreteras
+    const LOD_DISTANCE_SIMPLIFY: float = 3000.0   # Simplificar geometría
+
+    # Simplificación de geometría
+    const MIN_SEGMENT_LENGTH: float = 5.0         # Longitud mínima de segmento
+    const LOD_MIN_SEGMENT_LENGTH: float = 20.0    # Longitud mínima para LOD
+
+    # Flechas de dirección (calles de un sentido)
+    const ARROW_SPACING: float = 50.0     # Metros entre flechas
+    const ARROW_SIZE: float = 4.0         # Tamaño de flecha
+    const ARROW_HEIGHT: float = 0.3       # Altura sobre carretera
+
+    # Selección/resaltado
+    const SELECTION_WIDTH_MULTIPLIER: float = 1.2  # Multiplicador al seleccionar
+    const HOVER_WIDTH_MULTIPLIER: float = 1.1      # Multiplicador al pasar sobre
 ```
 
 ---
@@ -661,6 +705,102 @@ func _on_click(screen_pos: Vector2) -> void:
         node_renderer.deselect()
 ```
 
+#### EdgeRenderer
+
+Renderiza las carreteras de la red vial usando ImmediateMesh para eficiencia.
+
+**Características:**
+- Renderizado eficiente de 2000+ aristas con ImmediateMesh
+- Colores por tipo de carretera (motorway, primary, secondary, etc.)
+- Ancho de carretera basado en número de carriles
+- Flechas direccionales para calles de un solo sentido
+- Sistema LOD para simplificar geometría distante
+- Filtro de visibilidad por tipo de carretera
+
+```gdscript
+class_name EdgeRenderer
+extends Node3D
+
+# Señales
+signal edge_selected(edge_data: EdgeData)
+signal edge_hovered(edge_data: EdgeData)
+signal edge_hover_ended()
+signal render_complete(edge_count: int)
+
+# Configuración
+func set_converter(converter: CoordinateConverter) -> void
+func set_camera(camera: Camera3D) -> void
+
+# Renderizado
+func render_network(network: RoadNetwork) -> void
+func render_edges(edges: Array[EdgeData]) -> void
+func clear() -> void
+func refresh() -> void
+
+# Visibilidad por tipo
+func set_road_type_visible(road_type: EdgeData.RoadType, visible: bool) -> void
+func is_road_type_visible(road_type: EdgeData.RoadType) -> bool
+func toggle_road_type(road_type: EdgeData.RoadType) -> void
+
+# LOD
+func update_lod(camera: Camera3D) -> void
+func set_lod_enabled(enabled: bool) -> void
+
+# Consultas
+func has_edges() -> bool
+func get_edge_count() -> int
+func get_edge_by_id(edge_id: int) -> EdgeData
+func get_rendered_bounds() -> Dictionary  # {min, max, center, size}
+func get_stats() -> Dictionary
+func get_edge_debug_info(edge: EdgeData) -> String
+
+# Visibilidad general
+func set_roads_visible(visible: bool) -> void
+func are_roads_visible() -> bool
+```
+
+**Esquema de Colores:**
+| Tipo de Carretera | Color | Descripción |
+|-------------------|-------|-------------|
+| Motorway | Azul oscuro (#003366) | Autopistas |
+| Primary | Amarillo (#FFCC00) | Carreteras principales |
+| Secondary | Naranja (#FF8800) | Carreteras secundarias |
+| Tertiary | Naranja claro (#FFAA44) | Carreteras terciarias |
+| Residential | Blanco (#FFFFFF) | Calles residenciales |
+| Service | Gris claro (#CCCCCC) | Vías de servicio |
+
+**Ancho de Carretera por Carriles:**
+| Carriles | Ancho (metros) |
+|----------|----------------|
+| 1 | 3.0 m |
+| 2 | 6.0 m |
+| 3 | 9.0 m |
+| 4+ | 12.0 m |
+
+**Uso:**
+
+```gdscript
+# Configurar
+var converter := CoordinateConverter.new()
+converter.set_bounds_from_network(NetworkManager.network)
+
+@onready var edge_renderer: EdgeRenderer = $EdgeRenderer
+edge_renderer.set_converter(converter)
+edge_renderer.set_camera($Camera3D)
+
+# Renderizar
+edge_renderer.render_network(NetworkManager.network)
+
+# Filtrar por tipo
+edge_renderer.set_road_type_visible(EdgeData.RoadType.SERVICE, false)
+edge_renderer.refresh()
+
+# Actualizar LOD
+func _process(_delta: float) -> void:
+    if lod_enabled:
+        edge_renderer.update_lod($Camera3D)
+```
+
 ---
 
 ### Conversión de Coordenadas
@@ -884,13 +1024,15 @@ Pruebas de conversión de coordenadas:
 - Conversión por lotes
 - Integración con límites de red
 
-### Test Node Renderer (`test_node_renderer.tscn`)
+### Test Network Renderer (`test_node_renderer.tscn`)
 
-Pruebas de renderizado 3D de nodos:
+Pruebas de renderizado 3D completo de la red vial (nodos y carreteras):
 
-- Carga y visualización de red vial en 3D
-- Codificación de colores por tipo de nodo
-- Selección interactiva de nodos
+- Carga y visualización completa de red vial en 3D
+- **Nodos**: Esferas con colores por tipo (intersección, semáforo, etc.)
+- **Carreteras**: Líneas 3D con colores por tipo y ancho por carriles
+- **Flechas**: Indicadores de dirección en calles de un sentido
+- Toggles de visibilidad para nodos y carreteras
 - Controles de cámara:
   - **WASD**: Movimiento de cámara
   - **Q/E**: Arriba/Abajo
@@ -898,8 +1040,8 @@ Pruebas de renderizado 3D de nodos:
   - **Scroll**: Zoom
   - **Click izquierdo**: Seleccionar nodo
 - Sistema LOD para optimización de rendimiento
-- Información de debug al seleccionar nodos
-- Prueba de rendimiento con 5000+ nodos a 60 FPS
+- Estadísticas: nodos, aristas, longitud total, tipos
+- Prueba de rendimiento: 5000+ nodos y 2000+ aristas a 60 FPS
 
 ---
 
@@ -969,6 +1111,7 @@ func _spawn_road_visual(edge: EdgeData, points: Array[Vector3]) -> void:
 | `EdgeData`           | Datos de arista de red vial              |
 | `RoadNetwork`        | Contenedor de red completa               |
 | `NodeRenderer`       | Renderizado 3D de nodos con MultiMesh    |
+| `EdgeRenderer`       | Renderizado 3D de carreteras con ImmediateMesh |
 | `CoordinateConverter`| Conversión de coordenadas GPS a Godot    |
 | `JsonUtils`          | Utilidades de parseo JSON                |
 | `UILogger`           | Utilidad de logging para RichTextLabel   |

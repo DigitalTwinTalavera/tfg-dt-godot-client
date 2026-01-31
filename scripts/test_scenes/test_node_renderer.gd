@@ -1,5 +1,5 @@
-## Test scene for NodeRenderer
-## Visualizes road network nodes in 3D with interaction
+## Test scene for NodeRenderer and EdgeRenderer
+## Visualizes complete road network (nodes and edges) in 3D with interaction
 extends Node3D
 
 
@@ -12,10 +12,13 @@ extends Node3D
 @onready var clear_button: Button = $UI/PanelContainer/VBoxContainer/ClearButton
 @onready var back_button: Button = $UI/PanelContainer/VBoxContainer/BackButton
 @onready var lod_check: CheckBox = $UI/PanelContainer/VBoxContainer/LODCheck
+@onready var edges_check: CheckBox = $UI/PanelContainer/VBoxContainer/EdgesCheck
+@onready var nodes_check: CheckBox = $UI/PanelContainer/VBoxContainer/NodesCheck
 
 ## 3D References
 @onready var camera: Camera3D = $Camera3D
 @onready var node_renderer: NodeRenderer = $NodeRenderer
+@onready var edge_renderer: EdgeRenderer = $EdgeRenderer
 @onready var environment_light: DirectionalLight3D = $DirectionalLight3D
 
 ## Camera control
@@ -29,6 +32,10 @@ var _converter: CoordinateConverter
 
 ## LOD enabled
 var _lod_enabled: bool = false
+
+## Visibility toggles
+var _show_edges: bool = true
+var _show_nodes: bool = true
 
 ## Performance tracking
 var _frame_times: Array[float] = []
@@ -57,6 +64,8 @@ func _setup_converter() -> void:
 func _setup_renderer() -> void:
 	node_renderer.set_converter(_converter)
 	node_renderer.set_camera(camera)
+	edge_renderer.set_converter(_converter)
+	edge_renderer.set_camera(camera)
 
 
 func _connect_signals() -> void:
@@ -65,10 +74,20 @@ func _connect_signals() -> void:
 	back_button.pressed.connect(_on_back_pressed)
 	lod_check.toggled.connect(_on_lod_toggled)
 
-	node_renderer.render_complete.connect(_on_render_complete)
+	# Visibility toggles (if they exist in the scene)
+	if edges_check:
+		edges_check.toggled.connect(_on_edges_toggled)
+		edges_check.button_pressed = _show_edges
+	if nodes_check:
+		nodes_check.toggled.connect(_on_nodes_toggled)
+		nodes_check.button_pressed = _show_nodes
+
+	node_renderer.render_complete.connect(_on_node_render_complete)
 	node_renderer.node_selected.connect(_on_node_selected)
 	node_renderer.node_hovered.connect(_on_node_hovered)
 	node_renderer.node_hover_ended.connect(_on_node_hover_ended)
+
+	edge_renderer.render_complete.connect(_on_edge_render_complete)
 
 	NetworkManager.loading_started.connect(_on_loading_started)
 	NetworkManager.loading_progress.connect(_on_loading_progress)
@@ -81,8 +100,11 @@ func _process(delta: float) -> void:
 	_update_fps(delta)
 
 	# Update LOD if enabled
-	if _lod_enabled and node_renderer.has_nodes():
-		node_renderer.update_lod(camera)
+	if _lod_enabled:
+		if node_renderer.has_nodes():
+			node_renderer.update_lod(camera)
+		if edge_renderer.has_edges():
+			edge_renderer.update_lod(camera)
 
 
 func _input(event: InputEvent) -> void:
@@ -169,13 +191,24 @@ func _update_fps(delta: float) -> void:
 
 
 func _update_stats() -> void:
-	var stats := node_renderer.get_stats()
-	var text := "Nodes: %d\n" % stats.total_nodes
+	var node_stats := node_renderer.get_stats()
+	var edge_stats := edge_renderer.get_stats()
 
-	if stats.type_counts.size() > 0:
-		text += "\nBy Type:\n"
-		for type_name in stats.type_counts:
-			text += "  %s: %d\n" % [type_name, stats.type_counts[type_name]]
+	var text := "Nodes: %d | Edges: %d\n" % [node_stats.total_nodes, edge_stats.total_edges]
+	text += "Roads: %.1f km\n" % edge_stats.total_length_km
+
+	if node_stats.type_counts.size() > 0:
+		text += "\nNode Types:\n"
+		for type_name in node_stats.type_counts:
+			text += "  %s: %d\n" % [type_name, node_stats.type_counts[type_name]]
+
+	if edge_stats.type_counts.size() > 0:
+		text += "\nRoad Types:\n"
+		for type_name in edge_stats.type_counts:
+			text += "  %s: %d\n" % [type_name, edge_stats.type_counts[type_name]]
+
+	if edge_stats.one_way_count > 0:
+		text += "\nOne-way: %d\n" % edge_stats.one_way_count
 
 	stats_label.text = text
 
@@ -195,7 +228,8 @@ func _on_load_pressed() -> void:
 
 	if NetworkManager.is_loaded:
 		# Already loaded, just render
-		_render_nodes()
+		_render_network()
+		load_button.disabled = false
 	else:
 		# Load from backend
 		stats_label.text = "Loading network..."
@@ -204,6 +238,7 @@ func _on_load_pressed() -> void:
 
 func _on_clear_pressed() -> void:
 	node_renderer.clear()
+	edge_renderer.clear()
 	_update_stats()
 	_clear_node_info()
 
@@ -214,9 +249,20 @@ func _on_back_pressed() -> void:
 
 func _on_lod_toggled(enabled: bool) -> void:
 	_lod_enabled = enabled
-	if not enabled and node_renderer.has_nodes():
-		# Re-render without LOD to restore full scale
-		_render_nodes()
+	edge_renderer.set_lod_enabled(enabled)
+	if not enabled:
+		# Re-render without LOD to restore full detail
+		_render_network()
+
+
+func _on_edges_toggled(enabled: bool) -> void:
+	_show_edges = enabled
+	edge_renderer.set_roads_visible(enabled)
+
+
+func _on_nodes_toggled(enabled: bool) -> void:
+	_show_nodes = enabled
+	node_renderer.set_nodes_visible(enabled)
 
 
 ## Network loading handlers
@@ -232,20 +278,22 @@ func _on_loading_completed(network: RoadNetwork) -> void:
 	stats_label.text = "Network loaded! Rendering..."
 
 	if Config.should_log(Config.LogLevel.DEBUG):
-		print("[TestNodeRenderer] Network bounds_min: %s" % network.bounds_min)
-		print("[TestNodeRenderer] Network bounds_max: %s" % network.bounds_max)
-		print("[TestNodeRenderer] Network center: %s" % network.get_center())
+		print("[TestNetworkRenderer] Network bounds_min: %s" % network.bounds_min)
+		print("[TestNetworkRenderer] Network bounds_max: %s" % network.bounds_max)
+		print("[TestNetworkRenderer] Network center: %s" % network.get_center())
+		print("[TestNetworkRenderer] Nodes: %d, Edges: %d" % [network.get_node_count(), network.get_edge_count()])
 
 	# Update converter with network bounds
 	_converter.set_bounds_from_network(network)
 	node_renderer.set_converter(_converter)
+	edge_renderer.set_converter(_converter)
 
 	if Config.should_log(Config.LogLevel.DEBUG):
-		print("[TestNodeRenderer] Converter: %s" % _converter)
-		print("[TestNodeRenderer] Converter bounds size (meters): %s" % _converter.get_bounds_size_meters())
+		print("[TestNetworkRenderer] Converter: %s" % _converter)
+		print("[TestNetworkRenderer] Converter bounds size (meters): %s" % _converter.get_bounds_size_meters())
 
-	# Render nodes
-	_render_nodes()
+	# Render complete network
+	_render_network()
 
 	load_button.disabled = false
 
@@ -255,40 +303,49 @@ func _on_loading_failed(error: String) -> void:
 	load_button.disabled = false
 
 
-## Render the network nodes
-func _render_nodes() -> void:
+## Render the complete network (nodes and edges)
+func _render_network() -> void:
 	if not NetworkManager.is_loaded:
 		return
 
-	node_renderer.render_network(NetworkManager.network)
+	# Render edges first (so nodes appear on top)
+	if _show_edges:
+		edge_renderer.render_network(NetworkManager.network)
 
-	# Calculate camera position based on actual rendered nodes
-	_position_camera_for_nodes()
+	# Then render nodes
+	if _show_nodes:
+		node_renderer.render_network(NetworkManager.network)
+
+	# Calculate camera position based on rendered content
+	_position_camera_for_network()
 
 
-## Position camera to see all rendered nodes
-func _position_camera_for_nodes() -> void:
-	if not node_renderer.has_nodes():
+## Position camera to see the rendered network
+func _position_camera_for_network() -> void:
+	# Get bounds from rendered content (prefer edges if available, fall back to nodes)
+	var bounds: Dictionary
+	if edge_renderer.has_edges():
+		bounds = edge_renderer.get_rendered_bounds()
+	elif node_renderer.has_nodes():
+		bounds = node_renderer.get_rendered_bounds()
+	else:
 		return
 
-	# Get bounds from rendered nodes
-	var bounds := node_renderer.get_rendered_bounds()
 	var center: Vector3 = bounds.center
 	var size_vec: Vector3 = bounds.size
 	var max_size: float = maxf(size_vec.x, size_vec.z)
 
 	if Config.should_log(Config.LogLevel.DEBUG):
-		print("[TestNodeRenderer] Rendered bounds - min: %s, max: %s" % [bounds.min, bounds.max])
-		print("[TestNodeRenderer] Center: %s" % center)
-		print("[TestNodeRenderer] Size: %s, max_size: %.2f" % [size_vec, max_size])
+		print("[TestNetworkRenderer] Rendered bounds - min: %s, max: %s" % [bounds.min, bounds.max])
+		print("[TestNetworkRenderer] Center: %s" % center)
+		print("[TestNetworkRenderer] Size: %s, max_size: %.2f" % [size_vec, max_size])
 
 	# Adjust node radius based on network size for visibility
-	# Target: ~200-500 nodes visible at once, each node should be ~0.5-1% of view
 	var ideal_radius := maxf(max_size / 500.0, Config.NodeRendering.DEFAULT_RADIUS)
 	ideal_radius = minf(ideal_radius, 50.0)  # Cap at 50 meters max
 	node_renderer.set_node_radius(ideal_radius)
 	if Config.should_log(Config.LogLevel.DEBUG):
-		print("[TestNodeRenderer] Adjusted node radius to: %.2f meters" % ideal_radius)
+		print("[TestNetworkRenderer] Adjusted node radius to: %.2f meters" % ideal_radius)
 
 	# Ensure minimum camera distance
 	if max_size < 100.0:
@@ -307,20 +364,26 @@ func _position_camera_for_nodes() -> void:
 		camera.rotation_degrees = Vector3(-45, 0, 0)
 
 	if Config.should_log(Config.LogLevel.DEBUG):
-		print("[TestNodeRenderer] Camera position: %s" % camera.position)
+		print("[TestNetworkRenderer] Camera position: %s" % camera.position)
 
 
 ## Renderer signal handlers
-func _on_render_complete(node_count: int) -> void:
+func _on_node_render_complete(node_count: int) -> void:
 	_update_stats()
 	if Config.should_log(Config.LogLevel.INFO):
-		print("[TestNodeRenderer] Rendered %d nodes" % node_count)
+		print("[TestNetworkRenderer] Rendered %d nodes" % node_count)
+
+
+func _on_edge_render_complete(edge_count: int) -> void:
+	_update_stats()
+	if Config.should_log(Config.LogLevel.INFO):
+		print("[TestNetworkRenderer] Rendered %d edges" % edge_count)
 
 
 func _on_node_selected(node: NodeData) -> void:
 	_update_node_info(node)
 	if Config.should_log(Config.LogLevel.DEBUG):
-		print("[TestNodeRenderer] Selected node: %d (%s)" % [node.id, node.get_type_string()])
+		print("[TestNetworkRenderer] Selected node: %d (%s)" % [node.id, node.get_type_string()])
 
 
 func _on_node_hovered(_node: NodeData) -> void:
