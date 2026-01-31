@@ -165,6 +165,27 @@ class Camera:
 	const ORBIT_INVERT_Y: bool = false         # Invert Y axis for orbit
 
 
+## UI configuration
+class UI:
+	## Debug panel
+	const PANEL_MARGIN: int = 10               # Margin from screen edge
+	const PANEL_MIN_WIDTH: int = 250           # Minimum panel width
+	const PANEL_OPACITY: float = 0.85          # Background opacity (0-1)
+	const PANEL_CORNER_RADIUS: int = 8         # Corner radius for rounded edges
+
+	## Colors
+	const BACKGROUND_COLOR: Color = Color(0.1, 0.1, 0.12, 0.85)  # Dark semi-transparent
+	const TEXT_COLOR: Color = Color(0.9, 0.9, 0.9)               # Light gray text
+	const ACCENT_COLOR: Color = Color(0.3, 0.6, 1.0)             # Blue accent
+	const SUCCESS_COLOR: Color = Color(0.3, 0.8, 0.4)            # Green
+	const WARNING_COLOR: Color = Color(1.0, 0.7, 0.2)            # Yellow/Orange
+	const ERROR_COLOR: Color = Color(1.0, 0.3, 0.3)              # Red
+
+	## FPS counter
+	const FPS_UPDATE_INTERVAL: float = 0.5     # Seconds between FPS updates
+	const FPS_SAMPLE_COUNT: int = 30           # Number of frames to average
+
+
 ## Coordinate conversion constants
 class Coordinates:
 	## Meters per degree of latitude (approximately constant worldwide)

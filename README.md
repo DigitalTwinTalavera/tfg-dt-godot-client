@@ -85,6 +85,8 @@ tfg-dt-godot-client/
 ├── scenes/
 │   ├── main.tscn                   # Escena del menú principal
 │   ├── camera_rig.tscn             # Componente de cámara reutilizable
+│   ├── ui/
+│   │   └── debug_panel.tscn        # Panel de debug reutilizable
 │   └── test_scenes/
 │       ├── test_connection.tscn    # Pruebas de conexión HTTP
 │       ├── test_load_network.tscn  # Pruebas de carga de red
@@ -107,6 +109,8 @@ tfg-dt-godot-client/
 │   ├── renderers/
 │   │   ├── node_renderer.gd        # Renderizado 3D de nodos
 │   │   └── edge_renderer.gd        # Renderizado 3D de carreteras
+│   ├── ui/
+│   │   └── debug_panel.gd          # Panel de debug y estadísticas
 │   ├── utils/
 │   │   ├── json_utils.gd           # Utilidades JSON
 │   │   ├── ui_logger.gd            # Logger para UI
@@ -348,6 +352,29 @@ class Camera:
 
     # Configuración de órbita
     const ORBIT_INVERT_Y: bool = false         # Invertir eje Y en órbita
+```
+
+### Configuración de UI
+
+```gdscript
+class UI:
+    # Panel de debug
+    const PANEL_MARGIN: int = 10               # Margen desde borde de pantalla
+    const PANEL_MIN_WIDTH: int = 250           # Ancho mínimo del panel
+    const PANEL_OPACITY: float = 0.85          # Opacidad del fondo (0-1)
+    const PANEL_CORNER_RADIUS: int = 8         # Radio de esquinas redondeadas
+
+    # Colores
+    const BACKGROUND_COLOR: Color = Color(0.1, 0.1, 0.12, 0.85)  # Fondo oscuro semi-transparente
+    const TEXT_COLOR: Color = Color(0.9, 0.9, 0.9)               # Texto gris claro
+    const ACCENT_COLOR: Color = Color(0.3, 0.6, 1.0)             # Acento azul
+    const SUCCESS_COLOR: Color = Color(0.3, 0.8, 0.4)            # Verde
+    const WARNING_COLOR: Color = Color(1.0, 0.7, 0.2)            # Amarillo/Naranja
+    const ERROR_COLOR: Color = Color(1.0, 0.3, 0.3)              # Rojo
+
+    # Contador de FPS
+    const FPS_UPDATE_INTERVAL: float = 0.5     # Segundos entre actualizaciones
+    const FPS_SAMPLE_COUNT: int = 30           # Frames a promediar
 ```
 
 ---
@@ -942,6 +969,87 @@ camera_controller.enabled = false
 
 ---
 
+### Panel de Debug
+
+#### DebugPanel
+
+Panel de UI superpuesto para mostrar estadísticas de red y controles de visualización.
+
+**Características:**
+- Panel semi-transparente en esquina superior izquierda
+- Estadísticas en tiempo real (nodos, aristas, longitud de carreteras)
+- Información de cámara (posición, distancia)
+- Contador de FPS con código de colores
+- Toggles de visibilidad (nodos, carreteras, flechas)
+- Botones de acción (recargar red, reset cámara)
+- Diseño minimalista y responsive
+
+```gdscript
+class_name DebugPanel
+extends CanvasLayer
+
+# Señales
+signal nodes_visibility_changed(visible: bool)
+signal edges_visibility_changed(visible: bool)
+signal arrows_visibility_changed(visible: bool)
+signal reload_requested()
+signal reset_camera_requested()
+
+# Referencias externas (asignar desde escena padre)
+var camera_controller: CameraController
+var node_renderer: NodeRenderer
+var edge_renderer: EdgeRenderer
+
+# Establecer estadísticas de red
+func set_network_stats(nodes: int, edges: int, length_km: float) -> void
+
+# Actualizar stats desde renderers
+func update_from_renderers() -> void
+
+# Control de toggles
+func set_nodes_visible(visible: bool) -> void
+func set_edges_visible(visible: bool) -> void
+func set_arrows_visible(visible: bool) -> void
+func are_nodes_visible() -> bool
+func are_edges_visible() -> bool
+func are_arrows_visible() -> bool
+
+# Visibilidad del panel
+func set_panel_visible(visible: bool) -> void
+func is_panel_visible() -> bool
+func toggle_panel() -> void
+```
+
+**Uso:**
+
+```gdscript
+# Instanciar debug_panel.tscn
+var debug_panel := preload("res://scenes/ui/debug_panel.tscn").instantiate()
+add_child(debug_panel)
+
+# Asignar referencias
+debug_panel.camera_controller = $CameraRig
+debug_panel.node_renderer = $NodeRenderer
+debug_panel.edge_renderer = $EdgeRenderer
+
+# Conectar señales
+debug_panel.reload_requested.connect(_on_reload_network)
+debug_panel.reset_camera_requested.connect(_on_reset_camera)
+
+# Actualizar estadísticas
+debug_panel.update_from_renderers()
+
+# O manualmente
+debug_panel.set_network_stats(5000, 2500, 150.5)
+
+# Ocultar/mostrar panel (por ejemplo con tecla Tab)
+func _input(event: InputEvent) -> void:
+    if event.is_action_pressed("ui_focus_next"):
+        debug_panel.toggle_panel()
+```
+
+---
+
 ### Conversión de Coordenadas
 
 #### CoordinateConverter
@@ -1265,6 +1373,7 @@ func _spawn_road_visual(edge: EdgeData, points: Array[Vector3]) -> void:
 | `EdgeData`           | Datos de arista de red vial              |
 | `RoadNetwork`        | Contenedor de red completa               |
 | `CameraController`   | Controlador de cámara 3D con órbita/zoom |
+| `DebugPanel`         | Panel de estadísticas y controles UI     |
 | `NodeRenderer`       | Renderizado 3D de nodos con MultiMesh    |
 | `EdgeRenderer`       | Renderizado 3D de carreteras con ImmediateMesh |
 | `CoordinateConverter`| Conversión de coordenadas GPS a Godot    |
