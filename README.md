@@ -84,15 +84,19 @@ tfg-dt-godot-client/
 │   └── config.gd                   # Configuración global
 ├── scenes/
 │   ├── main.tscn                   # Escena del menú principal
+│   ├── camera_rig.tscn             # Componente de cámara reutilizable
 │   └── test_scenes/
 │       ├── test_connection.tscn    # Pruebas de conexión HTTP
 │       ├── test_load_network.tscn  # Pruebas de carga de red
-│       └── test_coordinates.tscn   # Pruebas de coordenadas
+│       ├── test_coordinates.tscn   # Pruebas de coordenadas
+│       └── test_camera.tscn        # Pruebas de controlador de cámara
 ├── scripts/
 │   ├── main.gd                     # Script de escena principal
 │   ├── autoload/
 │   │   ├── http_manager.gd         # Singleton HTTP
 │   │   └── network_manager.gd      # Singleton de red vial
+│   ├── camera/
+│   │   └── camera_controller.gd    # Controlador de cámara 3D
 │   ├── http/
 │   │   ├── http_client.gd          # Wrapper HTTP con async/await
 │   │   └── http_result.gd          # Clase de respuesta HTTP
@@ -111,6 +115,7 @@ tfg-dt-godot-client/
 │       ├── test_connection.gd
 │       ├── test_load_network.gd
 │       ├── test_coordinates.gd
+│       ├── test_camera.gd          # Prueba de cámara
 │       └── test_node_renderer.gd   # Prueba de renderizado 3D
 └── project.godot                   # Configuración del proyecto
 ```
@@ -264,6 +269,8 @@ class NodeColors:
 ```gdscript
 class NodeRendering:
     const DEFAULT_RADIUS: float = 3.0              # Radio de esfera en metros
+    const MAX_RADIUS: float = 50.0                 # Radio máximo en metros
+    const RADIUS_SCALE_FACTOR: float = 500.0       # Divisor para auto-escalado
     const SPHERE_RADIAL_SEGMENTS: int = 16         # Low-poly para rendimiento
     const SPHERE_RINGS: int = 8                    # Low-poly para rendimiento
     const LOD_DISTANCE_HIDE: float = 5000.0        # Distancia para ocultar nodos
@@ -272,6 +279,7 @@ class NodeRendering:
     const SELECTION_HIGHLIGHT_SCALE: float = 1.3   # Escala al seleccionar
     const HOVER_HIGHLIGHT_SCALE: float = 1.15      # Escala al pasar sobre
     const RAYCAST_MAX_DISTANCE: float = 10000.0    # Distancia máxima de raycast
+    const METALLIC_SPECULAR: float = 0.3           # Valor especular del material
 ```
 
 ### Configuración de Renderizado de Carreteras
@@ -305,6 +313,41 @@ class EdgeRendering:
     # Selección/resaltado
     const SELECTION_WIDTH_MULTIPLIER: float = 1.2  # Multiplicador al seleccionar
     const HOVER_WIDTH_MULTIPLIER: float = 1.1      # Multiplicador al pasar sobre
+```
+
+### Configuración de Cámara
+
+```gdscript
+class Camera:
+    # Velocidades de movimiento
+    const PAN_SPEED: float = 1.0               # Multiplicador de velocidad de pan
+    const ROTATION_SPEED: float = 0.003        # Sensibilidad de rotación
+    const KEYBOARD_MOVE_SPEED: float = 100.0   # Velocidad WASD (m/s)
+    const KEYBOARD_SPEED_BOOST: float = 3.0    # Multiplicador con Shift
+
+    # Configuración de zoom
+    const ZOOM_SPEED: float = 50.0             # Paso de zoom por scroll
+    const ZOOM_MIN_DISTANCE: float = 10.0      # Distancia mínima al punto focal
+    const ZOOM_MAX_DISTANCE: float = 10000.0   # Distancia máxima al punto focal
+
+    # Suavizado (interpolación)
+    const SMOOTH_ENABLED: bool = true          # Activar movimiento suave
+    const SMOOTH_POSITION_WEIGHT: float = 10.0 # Velocidad de interpolación posición
+    const SMOOTH_ROTATION_WEIGHT: float = 10.0 # Velocidad de interpolación rotación
+
+    # Vista por defecto
+    const DEFAULT_HEIGHT: float = 500.0        # Altura por defecto (metros)
+    const DEFAULT_DISTANCE: float = 500.0      # Distancia por defecto al centro
+    const DEFAULT_PITCH: float = -45.0         # Ángulo pitch por defecto (grados)
+    const DEFAULT_YAW: float = 0.0             # Ángulo yaw por defecto (grados)
+
+    # Límites
+    const MIN_HEIGHT: float = 5.0              # Altura Y mínima de cámara
+    const MAX_PITCH: float = -5.0              # Pitch máximo (casi horizontal)
+    const MIN_PITCH: float = -89.0             # Pitch mínimo (casi vertical)
+
+    # Configuración de órbita
+    const ORBIT_INVERT_Y: bool = false         # Invertir eje Y en órbita
 ```
 
 ---
@@ -803,6 +846,102 @@ func _process(_delta: float) -> void:
 
 ---
 
+### Controlador de Cámara
+
+#### CameraController
+
+Controlador de cámara 3D con órbita, zoom, pan y controles de teclado.
+
+**Características:**
+- Rotación orbital alrededor de punto focal (arrastrar con botón derecho)
+- Zoom con rueda del ratón
+- Pan con botón central o Shift + arrastrar derecho
+- Movimiento con teclado (WASD, Q/E)
+- Enfoque automático en red vial
+- Movimiento suave con interpolación
+- Límites de zoom configurables
+- Reset a vista por defecto (tecla Home)
+
+```gdscript
+class_name CameraController
+extends Node3D
+
+# Señales
+signal camera_moved(position: Vector3, rotation: Vector3)
+signal focal_point_changed(focal_point: Vector3)
+signal camera_reset()
+
+# Propiedades exportadas
+@export var camera: Camera3D
+@export var enabled: bool = true
+@export var smooth_enabled: bool = true
+@export var keyboard_enabled: bool = true
+
+# Configuración del punto focal
+func set_focal_point(point: Vector3) -> void
+func get_focal_point() -> Vector3
+
+# Configuración de distancia
+func set_distance(distance: float) -> void
+func get_distance() -> float
+
+# Configuración de ángulos de órbita
+func set_orbit_angles(pitch_deg: float, yaw_deg: float) -> void
+func get_orbit_angles() -> Vector2  # (pitch, yaw) en grados
+
+# Enfoque
+func focus_on(position: Vector3, distance: float = -1.0) -> void
+func focus_on_network(network: RoadNetwork, converter: CoordinateConverter = null) -> void
+func focus_on_bounds(bounds: Dictionary) -> void
+
+# Vista por defecto
+func set_default_view(focal_point: Vector3, distance: float, pitch_deg: float, yaw_deg: float) -> void
+func reset_camera() -> void
+func apply_instantly() -> void
+
+# Debug
+func get_debug_info() -> String
+```
+
+**Controles:**
+
+| Control | Acción |
+|---------|--------|
+| Arrastrar botón derecho | Órbita alrededor del punto focal |
+| Rueda del ratón arriba | Zoom in |
+| Rueda del ratón abajo | Zoom out |
+| Arrastrar botón central | Pan (mover punto focal) |
+| Shift + arrastrar derecho | Pan alternativo |
+| W/S | Mover adelante/atrás |
+| A/D | Mover izquierda/derecha |
+| Q/E | Mover abajo/arriba |
+| Shift (con WASD) | Movimiento rápido |
+| Home | Reset a vista por defecto |
+
+**Uso:**
+
+```gdscript
+# Usar la escena camera_rig.tscn
+@onready var camera_controller: CameraController = $CameraRig
+
+# Configurar vista por defecto
+camera_controller.set_default_view(Vector3.ZERO, 500.0, -45.0, 0.0)
+
+# Enfocar en la red vial cargada
+camera_controller.focus_on_bounds(edge_renderer.get_rendered_bounds())
+
+# Enfocar en una posición específica
+camera_controller.focus_on(Vector3(100, 0, 200), 300.0)
+
+# Reset a vista por defecto
+camera_controller.reset_camera()
+
+# Desactivar temporalmente
+camera_controller.enabled = false
+```
+
+---
+
 ### Conversión de Coordenadas
 
 #### CoordinateConverter
@@ -1024,6 +1163,21 @@ Pruebas de conversión de coordenadas:
 - Conversión por lotes
 - Integración con límites de red
 
+### Test Camera (`test_camera.tscn`)
+
+Pruebas del controlador de cámara 3D:
+
+- Rotación orbital alrededor de punto focal
+- Zoom in/out con rueda del ratón
+- Pan con botón central o Shift + botón derecho
+- Movimiento con teclado (WASD, Q/E)
+- Reset a vista por defecto (tecla Home)
+- Toggle de movimiento suave (interpolación)
+- Toggle de controles de teclado
+- Enfoque en puntos de referencia
+- Visualización de información de cámara en tiempo real
+- Objetos de referencia para orientación visual
+
 ### Test Network Renderer (`test_node_renderer.tscn`)
 
 Pruebas de renderizado 3D completo de la red vial (nodos y carreteras):
@@ -1110,6 +1264,7 @@ func _spawn_road_visual(edge: EdgeData, points: Array[Vector3]) -> void:
 | `NodeData`           | Datos de nodo de red vial                |
 | `EdgeData`           | Datos de arista de red vial              |
 | `RoadNetwork`        | Contenedor de red completa               |
+| `CameraController`   | Controlador de cámara 3D con órbita/zoom |
 | `NodeRenderer`       | Renderizado 3D de nodos con MultiMesh    |
 | `EdgeRenderer`       | Renderizado 3D de carreteras con ImmediateMesh |
 | `CoordinateConverter`| Conversión de coordenadas GPS a Godot    |

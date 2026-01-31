@@ -1,0 +1,14 @@
+[gd_scene load_steps=2 format=3 uid="uid://camera_rig"]
+
+[ext_resource type="Script" path="res://scripts/camera/camera_controller.gd" id="1_controller"]
+
+[node name="CameraRig" type="Node3D"]
+script = ExtResource("1_controller")
+smooth_enabled = true
+keyboard_enabled = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.707, 0.707, 0, -0.707, 0.707, 0, 500, 500)
+current = true
+fov = 60.0
+far = 50000.0

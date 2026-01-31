@@ -127,18 +127,3 @@ func is_busy() -> bool:
 ## Cancel any ongoing request
 func cancel_request() -> void:
 	_client.cancel()
-
-
-## Get the configured backend base URL
-func get_backend_url() -> String:
-	return Config.base_url
-
-
-## Get the configured API URL
-func get_api_url() -> String:
-	return Config.api_url
-
-
-## Get the configured WebSocket URL
-func get_websocket_url() -> String:
-	return Config.ws_url

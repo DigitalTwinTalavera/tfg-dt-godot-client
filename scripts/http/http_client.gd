@@ -145,6 +145,8 @@ func _on_request_completed(http_result: int, response_code: int, headers: Packed
 			var json_error := json.parse(body_string)
 			if json_error == OK:
 				parsed_data = json.data
+			elif Config.should_log(Config.LogLevel.WARNING):
+				print("[HTTPClient] JSON parse error at line %d: %s" % [json.get_error_line(), json.get_error_message()])
 
 		# Check if status code indicates success (2xx)
 		if response_code >= 200 and response_code < 300:
