@@ -58,6 +58,8 @@ static func from_dict(data: Dictionary) -> NodeData:
 		var parse_result := JsonUtils.parse(metadata_json)
 		if parse_result.success:
 			node.metadata = parse_result.data
+		elif Config.should_log(Config.LogLevel.WARNING):
+			print("[NodeData] Failed to parse metadata for node %d: %s" % [node.id, parse_result.error])
 
 	return node
 

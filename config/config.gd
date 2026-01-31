@@ -84,6 +84,8 @@ class NodeColors:
 ## Node rendering configuration
 class NodeRendering:
 	const DEFAULT_RADIUS: float = 3.0           # Node sphere radius in meters
+	const MAX_RADIUS: float = 50.0              # Maximum node radius cap in meters
+	const RADIUS_SCALE_FACTOR: float = 500.0    # Divisor for auto-scaling radius
 	const SPHERE_RADIAL_SEGMENTS: int = 16      # Low-poly for performance
 	const SPHERE_RINGS: int = 8                 # Low-poly for performance
 	const LOD_DISTANCE_HIDE: float = 5000.0     # Distance to hide nodes
@@ -92,6 +94,7 @@ class NodeRendering:
 	const SELECTION_HIGHLIGHT_SCALE: float = 1.3  # Scale when selected
 	const HOVER_HIGHLIGHT_SCALE: float = 1.15   # Scale when hovered
 	const RAYCAST_MAX_DISTANCE: float = 10000.0 # Max raycast distance for node picking
+	const METALLIC_SPECULAR: float = 0.3        # Material metallic specular value
 
 
 ## Edge/Road rendering configuration
@@ -127,6 +130,39 @@ class EdgeRendering:
 	## Selection/highlight
 	const SELECTION_WIDTH_MULTIPLIER: float = 1.2
 	const HOVER_WIDTH_MULTIPLIER: float = 1.1
+
+
+## Camera controller configuration
+class Camera:
+	## Movement speeds
+	const PAN_SPEED: float = 1.0               # Pan speed multiplier
+	const ROTATION_SPEED: float = 0.003        # Mouse rotation sensitivity
+	const KEYBOARD_MOVE_SPEED: float = 100.0   # WASD movement speed (m/s)
+	const KEYBOARD_SPEED_BOOST: float = 3.0    # Speed multiplier when holding Shift
+
+	## Zoom configuration
+	const ZOOM_SPEED: float = 50.0             # Zoom step per scroll
+	const ZOOM_MIN_DISTANCE: float = 10.0      # Minimum distance from focal point
+	const ZOOM_MAX_DISTANCE: float = 10000.0   # Maximum distance from focal point
+
+	## Smoothing (interpolation)
+	const SMOOTH_ENABLED: bool = true          # Enable smooth camera movement
+	const SMOOTH_POSITION_WEIGHT: float = 10.0 # Position interpolation speed
+	const SMOOTH_ROTATION_WEIGHT: float = 10.0 # Rotation interpolation speed
+
+	## Default view
+	const DEFAULT_HEIGHT: float = 500.0        # Default camera height (meters)
+	const DEFAULT_DISTANCE: float = 500.0      # Default distance from center
+	const DEFAULT_PITCH: float = -45.0         # Default pitch angle (degrees)
+	const DEFAULT_YAW: float = 0.0             # Default yaw angle (degrees)
+
+	## Limits
+	const MIN_HEIGHT: float = 5.0              # Minimum camera Y position
+	const MAX_PITCH: float = -5.0              # Maximum pitch (almost horizontal)
+	const MIN_PITCH: float = -89.0             # Minimum pitch (almost vertical)
+
+	## Orbit configuration
+	const ORBIT_INVERT_Y: bool = false         # Invert Y axis for orbit
 
 
 ## Coordinate conversion constants

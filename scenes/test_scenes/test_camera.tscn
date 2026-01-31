@@ -1,0 +1,147 @@
+[gd_scene load_steps=8 format=3 uid="uid://test_camera"]
+
+[ext_resource type="Script" path="res://scripts/test_scenes/test_camera.gd" id="1_test"]
+[ext_resource type="Script" path="res://scripts/camera/camera_controller.gd" id="2_controller"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
+sky_top_color = Color(0.4, 0.6, 0.8, 1)
+sky_horizon_color = Color(0.7, 0.8, 0.9, 1)
+ground_bottom_color = Color(0.2, 0.2, 0.2, 1)
+ground_horizon_color = Color(0.4, 0.4, 0.4, 1)
+
+[sub_resource type="Sky" id="Sky_main"]
+sky_material = SubResource("ProceduralSkyMaterial_sky")
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 2
+sky = SubResource("Sky_main")
+ambient_light_source = 2
+ambient_light_sky_contribution = 0.5
+
+[sub_resource type="BoxMesh" id="BoxMesh_ground"]
+size = Vector3(2000, 1, 2000)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ground"]
+albedo_color = Color(0.25, 0.3, 0.25, 1)
+
+[sub_resource type="SphereMesh" id="SphereMesh_marker"]
+radius = 25.0
+height = 50.0
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_marker"]
+albedo_color = Color(1.0, 0.5, 0.0, 1)
+emission_enabled = true
+emission = Color(1.0, 0.5, 0.0, 1)
+emission_energy_multiplier = 0.3
+
+[node name="TestCamera" type="Node3D"]
+script = ExtResource("1_test")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.433, 0.25, 0, 0.5, 0.866, -0.5, -0.75, 0.433, 100, 200, 100)
+light_energy = 1.2
+shadow_enabled = true
+
+[node name="CameraRig" type="Node3D" parent="."]
+script = ExtResource("2_controller")
+smooth_enabled = true
+keyboard_enabled = true
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig"]
+transform = Transform3D(1, 0, 0, 0, 0.707, 0.707, 0, -0.707, 0.707, 0, 500, 500)
+current = true
+fov = 60.0
+far = 50000.0
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+mesh = SubResource("BoxMesh_ground")
+surface_material_override/0 = SubResource("StandardMaterial3D_ground")
+
+[node name="Marker" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 300, 0, 200)
+
+[node name="MarkerMesh" type="MeshInstance3D" parent="Marker"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 25, 0)
+mesh = SubResource("SphereMesh_marker")
+surface_material_override/0 = SubResource("StandardMaterial3D_marker")
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="PanelContainer" type="PanelContainer" parent="UI"]
+offset_right = 280.0
+offset_bottom = 400.0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="UI/PanelContainer"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TitleLabel" type="Label" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Camera Controller Test"
+horizontal_alignment = 1
+
+[node name="HSeparator" type="HSeparator" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="InfoLabel" type="RichTextLabel" parent="UI/PanelContainer/VBoxContainer"]
+custom_minimum_size = Vector2(250, 120)
+layout_mode = 2
+bbcode_enabled = true
+text = "Camera Info"
+
+[node name="HSeparator2" type="HSeparator" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="SmoothCheck" type="CheckBox" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+button_pressed = true
+text = "Smooth Movement"
+
+[node name="KeyboardCheck" type="CheckBox" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+button_pressed = true
+text = "Keyboard Controls (WASD)"
+
+[node name="HSeparator3" type="HSeparator" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="ResetButton" type="Button" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Reset Camera (Home)"
+
+[node name="FocusOriginButton" type="Button" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Focus on Origin"
+
+[node name="FocusMarkerButton" type="Button" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Focus on Marker"
+
+[node name="BackButton" type="Button" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Back to Main"
+
+[node name="ControlsLabel" type="Label" parent="UI/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Controls:
+Right-click drag: Orbit
+Middle-click drag: Pan
+Shift + Right drag: Pan
+Scroll: Zoom
+WASD: Move camera
+Q/E: Up/Down
+Home: Reset view"
+
+[node name="FPSLabel" type="Label" parent="UI"]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -100.0
+offset_bottom = 30.0
+grow_horizontal = 0
+text = "FPS: 0"
+horizontal_alignment = 2

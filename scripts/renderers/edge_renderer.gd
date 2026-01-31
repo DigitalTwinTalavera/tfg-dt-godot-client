@@ -218,18 +218,24 @@ func _render_single_road(edge: EdgeData) -> void:
 		var v4 := p2 - perpendicular * half_width
 
 		# Triangle 1: v1, v2, v3
+		_road_mesh.surface_set_normal(Vector3.UP)
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v1)
+		_road_mesh.surface_set_normal(Vector3.UP)
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v2)
+		_road_mesh.surface_set_normal(Vector3.UP)
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v3)
 
 		# Triangle 2: v2, v4, v3
+		_road_mesh.surface_set_normal(Vector3.UP)
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v2)
+		_road_mesh.surface_set_normal(Vector3.UP)
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v4)
+		_road_mesh.surface_set_normal(Vector3.UP)
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v3)
 
@@ -314,9 +320,12 @@ func _draw_arrow(arrow_position: Vector3, direction: Vector3) -> void:
 	var base_left := arrow_position - direction * half_size + perpendicular * half_size * 0.5
 	var base_right := arrow_position - direction * half_size - perpendicular * half_size * 0.5
 
-	# Add triangle
+	# Add triangle with normals
+	_arrow_mesh.surface_set_normal(Vector3.UP)
 	_arrow_mesh.surface_add_vertex(tip)
+	_arrow_mesh.surface_set_normal(Vector3.UP)
 	_arrow_mesh.surface_add_vertex(base_left)
+	_arrow_mesh.surface_set_normal(Vector3.UP)
 	_arrow_mesh.surface_add_vertex(base_right)
 
 

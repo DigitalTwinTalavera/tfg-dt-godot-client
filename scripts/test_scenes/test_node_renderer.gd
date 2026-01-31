@@ -22,8 +22,8 @@ extends Node3D
 @onready var environment_light: DirectionalLight3D = $DirectionalLight3D
 
 ## Camera control
-var _camera_speed: float = 100.0
-var _camera_rotation_speed: float = 0.003
+var _camera_speed: float = Config.Camera.KEYBOARD_MOVE_SPEED
+var _camera_rotation_speed: float = Config.Camera.ROTATION_SPEED
 var _camera_dragging: bool = false
 var _last_mouse_pos: Vector2 = Vector2.ZERO
 
@@ -121,9 +121,9 @@ func _input(event: InputEvent) -> void:
 
 		# Camera zoom with scroll
 		elif mouse_event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			camera.position += camera.basis.z * -50.0
+			camera.position += camera.basis.z * -Config.Camera.ZOOM_SPEED
 		elif mouse_event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			camera.position += camera.basis.z * 50.0
+			camera.position += camera.basis.z * Config.Camera.ZOOM_SPEED
 
 	# Camera rotation
 	elif event is InputEventMouseMotion:
@@ -341,19 +341,19 @@ func _position_camera_for_network() -> void:
 		print("[TestNetworkRenderer] Size: %s, max_size: %.2f" % [size_vec, max_size])
 
 	# Adjust node radius based on network size for visibility
-	var ideal_radius := maxf(max_size / 500.0, Config.NodeRendering.DEFAULT_RADIUS)
-	ideal_radius = minf(ideal_radius, 50.0)  # Cap at 50 meters max
+	var ideal_radius := maxf(max_size / Config.NodeRendering.RADIUS_SCALE_FACTOR, Config.NodeRendering.DEFAULT_RADIUS)
+	ideal_radius = minf(ideal_radius, Config.NodeRendering.MAX_RADIUS)
 	node_renderer.set_node_radius(ideal_radius)
 	if Config.should_log(Config.LogLevel.DEBUG):
 		print("[TestNetworkRenderer] Adjusted node radius to: %.2f meters" % ideal_radius)
 
 	# Ensure minimum camera distance
-	if max_size < 100.0:
-		max_size = 1000.0  # Default view distance
+	if max_size < Config.Camera.MIN_HEIGHT:
+		max_size = Config.Camera.DEFAULT_DISTANCE
 
 	# Position camera above and looking at center
-	var camera_height := maxf(max_size * 0.5, 100.0)
-	var camera_distance := maxf(max_size * 0.5, 100.0)
+	var camera_height := maxf(max_size * 0.5, Config.Camera.MIN_HEIGHT)
+	var camera_distance := maxf(max_size * 0.5, Config.Camera.MIN_HEIGHT)
 	var camera_offset := Vector3(0, camera_height, camera_distance)
 	camera.position = center + camera_offset
 
@@ -361,7 +361,7 @@ func _position_camera_for_network() -> void:
 	if camera.position.distance_to(center) > 1.0:
 		camera.look_at(center)
 	else:
-		camera.rotation_degrees = Vector3(-45, 0, 0)
+		camera.rotation_degrees = Vector3(Config.Camera.DEFAULT_PITCH, 0, 0)
 
 	if Config.should_log(Config.LogLevel.DEBUG):
 		print("[TestNetworkRenderer] Camera position: %s" % camera.position)

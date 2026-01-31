@@ -92,7 +92,7 @@ func _setup_material() -> void:
 	_material.vertex_color_use_as_albedo = true
 	_material.roughness = 0.7
 	_material.metallic = 0.1
-	_material.metallic_specular = 0.3
+	_material.metallic_specular = Config.NodeRendering.METALLIC_SPECULAR
 
 	# Enable some emission for visibility
 	_material.emission_enabled = true
