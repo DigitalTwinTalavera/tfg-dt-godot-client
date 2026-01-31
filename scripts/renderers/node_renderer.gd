@@ -90,13 +90,13 @@ func _setup_multi_mesh() -> void:
 func _setup_material() -> void:
 	_material = StandardMaterial3D.new()
 	_material.vertex_color_use_as_albedo = true
-	_material.roughness = 0.7
-	_material.metallic = 0.1
+	_material.roughness = Config.NodeRendering.MATERIAL_ROUGHNESS
+	_material.metallic = Config.NodeRendering.MATERIAL_METALLIC
 	_material.metallic_specular = Config.NodeRendering.METALLIC_SPECULAR
 
 	# Enable some emission for visibility
 	_material.emission_enabled = true
-	_material.emission_energy_multiplier = 0.1
+	_material.emission_energy_multiplier = Config.NodeRendering.EMISSION_ENERGY
 
 	# Apply to mesh
 	if _multi_mesh_instance and _multi_mesh_instance.multimesh and _multi_mesh_instance.multimesh.mesh:

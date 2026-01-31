@@ -67,10 +67,10 @@ func _setup_ui() -> void:
 	style.corner_radius_top_right = Config.UI.PANEL_CORNER_RADIUS
 	style.corner_radius_bottom_left = Config.UI.PANEL_CORNER_RADIUS
 	style.corner_radius_bottom_right = Config.UI.PANEL_CORNER_RADIUS
-	style.content_margin_left = 12
-	style.content_margin_right = 12
-	style.content_margin_top = 8
-	style.content_margin_bottom = 8
+	style.content_margin_left = Config.UI.PANEL_CONTENT_MARGIN
+	style.content_margin_right = Config.UI.PANEL_CONTENT_MARGIN
+	style.content_margin_top = Config.UI.PANEL_VERTICAL_MARGIN
+	style.content_margin_bottom = Config.UI.PANEL_VERTICAL_MARGIN
 	_panel.add_theme_stylebox_override("panel", style)
 
 	# Position panel
@@ -80,7 +80,7 @@ func _setup_ui() -> void:
 
 	# Main vertical container
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
+	vbox.add_theme_constant_override("separation", Config.UI.PANEL_ITEM_SPACING)
 	_panel.add_child(vbox)
 
 	# Title
@@ -116,7 +116,7 @@ func _setup_ui() -> void:
 	vbox.add_child(camera_title)
 
 	_camera_label = Label.new()
-	_camera_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	_camera_label.add_theme_color_override("font_color", Config.UI.TEXT_SECONDARY_COLOR)
 	vbox.add_child(_camera_label)
 
 	# FPS
@@ -163,7 +163,7 @@ func _setup_ui() -> void:
 
 func _create_separator() -> HSeparator:
 	var sep := HSeparator.new()
-	sep.add_theme_color_override("separator", Color(0.3, 0.3, 0.35))
+	sep.add_theme_color_override("separator", Config.UI.SEPARATOR_COLOR)
 	return sep
 
 
@@ -171,7 +171,7 @@ func _create_checkbox(text: String, checked: bool) -> CheckBox:
 	var checkbox := CheckBox.new()
 	checkbox.text = text
 	checkbox.button_pressed = checked
-	checkbox.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
+	checkbox.add_theme_color_override("font_color", Config.UI.TEXT_MUTED_COLOR)
 	checkbox.add_theme_color_override("font_pressed_color", Config.UI.TEXT_COLOR)
 	return checkbox
 
@@ -179,30 +179,30 @@ func _create_checkbox(text: String, checked: bool) -> CheckBox:
 func _create_button(text: String) -> Button:
 	var button := Button.new()
 	button.text = text
-	button.custom_minimum_size = Vector2(0, 28)
+	button.custom_minimum_size = Vector2(0, Config.UI.BUTTON_HEIGHT)
 
 	var style_normal := StyleBoxFlat.new()
-	style_normal.bg_color = Color(0.2, 0.2, 0.25)
-	style_normal.corner_radius_top_left = 4
-	style_normal.corner_radius_top_right = 4
-	style_normal.corner_radius_bottom_left = 4
-	style_normal.corner_radius_bottom_right = 4
+	style_normal.bg_color = Config.UI.BUTTON_NORMAL_COLOR
+	style_normal.corner_radius_top_left = Config.UI.BUTTON_CORNER_RADIUS
+	style_normal.corner_radius_top_right = Config.UI.BUTTON_CORNER_RADIUS
+	style_normal.corner_radius_bottom_left = Config.UI.BUTTON_CORNER_RADIUS
+	style_normal.corner_radius_bottom_right = Config.UI.BUTTON_CORNER_RADIUS
 	button.add_theme_stylebox_override("normal", style_normal)
 
 	var style_hover := StyleBoxFlat.new()
-	style_hover.bg_color = Color(0.25, 0.25, 0.3)
-	style_hover.corner_radius_top_left = 4
-	style_hover.corner_radius_top_right = 4
-	style_hover.corner_radius_bottom_left = 4
-	style_hover.corner_radius_bottom_right = 4
+	style_hover.bg_color = Config.UI.BUTTON_HOVER_COLOR
+	style_hover.corner_radius_top_left = Config.UI.BUTTON_CORNER_RADIUS
+	style_hover.corner_radius_top_right = Config.UI.BUTTON_CORNER_RADIUS
+	style_hover.corner_radius_bottom_left = Config.UI.BUTTON_CORNER_RADIUS
+	style_hover.corner_radius_bottom_right = Config.UI.BUTTON_CORNER_RADIUS
 	button.add_theme_stylebox_override("hover", style_hover)
 
 	var style_pressed := StyleBoxFlat.new()
-	style_pressed.bg_color = Color(0.15, 0.15, 0.2)
-	style_pressed.corner_radius_top_left = 4
-	style_pressed.corner_radius_top_right = 4
-	style_pressed.corner_radius_bottom_left = 4
-	style_pressed.corner_radius_bottom_right = 4
+	style_pressed.bg_color = Config.UI.BUTTON_PRESSED_COLOR
+	style_pressed.corner_radius_top_left = Config.UI.BUTTON_CORNER_RADIUS
+	style_pressed.corner_radius_top_right = Config.UI.BUTTON_CORNER_RADIUS
+	style_pressed.corner_radius_bottom_left = Config.UI.BUTTON_CORNER_RADIUS
+	style_pressed.corner_radius_bottom_right = Config.UI.BUTTON_CORNER_RADIUS
 	button.add_theme_stylebox_override("pressed", style_pressed)
 
 	return button
