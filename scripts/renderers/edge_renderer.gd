@@ -93,7 +93,7 @@ func _setup_materials() -> void:
 
 	# Arrow material
 	_arrow_material = StandardMaterial3D.new()
-	_arrow_material.albedo_color = Color(1.0, 1.0, 1.0, 0.9)
+	_arrow_material.albedo_color = Config.EdgeRendering.ARROW_COLOR
 	_arrow_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_arrow_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_arrow_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA

@@ -94,7 +94,10 @@ class NodeRendering:
 	const SELECTION_HIGHLIGHT_SCALE: float = 1.3  # Scale when selected
 	const HOVER_HIGHLIGHT_SCALE: float = 1.15   # Scale when hovered
 	const RAYCAST_MAX_DISTANCE: float = 10000.0 # Max raycast distance for node picking
+	const MATERIAL_ROUGHNESS: float = 0.7       # Material roughness value
+	const MATERIAL_METALLIC: float = 0.1        # Material metallic value
 	const METALLIC_SPECULAR: float = 0.3        # Material metallic specular value
+	const EMISSION_ENERGY: float = 0.1          # Emission energy multiplier
 
 
 ## Edge/Road rendering configuration
@@ -126,6 +129,7 @@ class EdgeRendering:
 	const ARROW_SPACING: float = 50.0     # Meters between arrows
 	const ARROW_SIZE: float = 4.0         # Arrow size in meters
 	const ARROW_HEIGHT: float = 0.3       # Arrow height above road
+	const ARROW_COLOR: Color = Color(1.0, 1.0, 1.0, 0.9)  # Arrow color (white, semi-transparent)
 
 	## Selection/highlight
 	const SELECTION_WIDTH_MULTIPLIER: float = 1.2
@@ -136,6 +140,7 @@ class EdgeRendering:
 class Camera:
 	## Movement speeds
 	const PAN_SPEED: float = 1.0               # Pan speed multiplier
+	const PAN_SCALE_FACTOR: float = 0.001      # Pan distance scale factor
 	const ROTATION_SPEED: float = 0.003        # Mouse rotation sensitivity
 	const KEYBOARD_MOVE_SPEED: float = 100.0   # WASD movement speed (m/s)
 	const KEYBOARD_SPEED_BOOST: float = 3.0    # Speed multiplier when holding Shift
@@ -163,6 +168,42 @@ class Camera:
 
 	## Orbit configuration
 	const ORBIT_INVERT_Y: bool = false         # Invert Y axis for orbit
+
+	## Focus on bounds configuration
+	const BOUNDS_VIEW_MULTIPLIER: float = 0.75 # Multiplier for viewing bounds
+	const BOUNDS_DEFAULT_SIZE: float = 1000.0  # Default size when bounds invalid
+
+
+## UI configuration
+class UI:
+	## Debug panel
+	const PANEL_MARGIN: int = 10               # Margin from screen edge
+	const PANEL_MIN_WIDTH: int = 250           # Minimum panel width
+	const PANEL_OPACITY: float = 0.85          # Background opacity (0-1)
+	const PANEL_CORNER_RADIUS: int = 8         # Corner radius for rounded edges
+	const PANEL_CONTENT_MARGIN: int = 12       # Content margin inside panel
+	const PANEL_VERTICAL_MARGIN: int = 8       # Vertical margin inside panel
+	const PANEL_ITEM_SPACING: int = 6          # Spacing between items
+	const BUTTON_HEIGHT: int = 28              # Button minimum height
+	const BUTTON_CORNER_RADIUS: int = 4        # Button corner radius
+
+	## Colors
+	const BACKGROUND_COLOR: Color = Color(0.1, 0.1, 0.12, 0.85)  # Dark semi-transparent
+	const TEXT_COLOR: Color = Color(0.9, 0.9, 0.9)               # Light gray text
+	const TEXT_SECONDARY_COLOR: Color = Color(0.7, 0.7, 0.7)     # Secondary text
+	const TEXT_MUTED_COLOR: Color = Color(0.8, 0.8, 0.8)         # Muted text
+	const ACCENT_COLOR: Color = Color(0.3, 0.6, 1.0)             # Blue accent
+	const SUCCESS_COLOR: Color = Color(0.3, 0.8, 0.4)            # Green
+	const WARNING_COLOR: Color = Color(1.0, 0.7, 0.2)            # Yellow/Orange
+	const ERROR_COLOR: Color = Color(1.0, 0.3, 0.3)              # Red
+	const SEPARATOR_COLOR: Color = Color(0.3, 0.3, 0.35)         # Separator line
+	const BUTTON_NORMAL_COLOR: Color = Color(0.2, 0.2, 0.25)     # Button normal
+	const BUTTON_HOVER_COLOR: Color = Color(0.25, 0.25, 0.3)     # Button hover
+	const BUTTON_PRESSED_COLOR: Color = Color(0.15, 0.15, 0.2)   # Button pressed
+
+	## FPS counter
+	const FPS_UPDATE_INTERVAL: float = 0.5     # Seconds between FPS updates
+	const FPS_SAMPLE_COUNT: int = 30           # Number of frames to average
 
 
 ## Coordinate conversion constants

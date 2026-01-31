@@ -85,6 +85,8 @@ tfg-dt-godot-client/
 ├── scenes/
 │   ├── main.tscn                   # Escena del menú principal
 │   ├── camera_rig.tscn             # Componente de cámara reutilizable
+│   ├── ui/
+│   │   └── debug_panel.tscn        # Panel de debug reutilizable
 │   └── test_scenes/
 │       ├── test_connection.tscn    # Pruebas de conexión HTTP
 │       ├── test_load_network.tscn  # Pruebas de carga de red
@@ -107,6 +109,8 @@ tfg-dt-godot-client/
 │   ├── renderers/
 │   │   ├── node_renderer.gd        # Renderizado 3D de nodos
 │   │   └── edge_renderer.gd        # Renderizado 3D de carreteras
+│   ├── ui/
+│   │   └── debug_panel.gd          # Panel de debug y estadísticas
 │   ├── utils/
 │   │   ├── json_utils.gd           # Utilidades JSON
 │   │   ├── ui_logger.gd            # Logger para UI
@@ -279,7 +283,10 @@ class NodeRendering:
     const SELECTION_HIGHLIGHT_SCALE: float = 1.3   # Escala al seleccionar
     const HOVER_HIGHLIGHT_SCALE: float = 1.15      # Escala al pasar sobre
     const RAYCAST_MAX_DISTANCE: float = 10000.0    # Distancia máxima de raycast
+    const MATERIAL_ROUGHNESS: float = 0.7          # Rugosidad del material
+    const MATERIAL_METALLIC: float = 0.1           # Metalicidad del material
     const METALLIC_SPECULAR: float = 0.3           # Valor especular del material
+    const EMISSION_ENERGY: float = 0.1             # Energía de emisión
 ```
 
 ### Configuración de Renderizado de Carreteras
@@ -309,6 +316,7 @@ class EdgeRendering:
     const ARROW_SPACING: float = 50.0     # Metros entre flechas
     const ARROW_SIZE: float = 4.0         # Tamaño de flecha
     const ARROW_HEIGHT: float = 0.3       # Altura sobre carretera
+    const ARROW_COLOR: Color = Color(1.0, 1.0, 1.0, 0.9)  # Color de flechas
 
     # Selección/resaltado
     const SELECTION_WIDTH_MULTIPLIER: float = 1.2  # Multiplicador al seleccionar
@@ -321,6 +329,7 @@ class EdgeRendering:
 class Camera:
     # Velocidades de movimiento
     const PAN_SPEED: float = 1.0               # Multiplicador de velocidad de pan
+    const PAN_SCALE_FACTOR: float = 0.001      # Factor de escala para pan
     const ROTATION_SPEED: float = 0.003        # Sensibilidad de rotación
     const KEYBOARD_MOVE_SPEED: float = 100.0   # Velocidad WASD (m/s)
     const KEYBOARD_SPEED_BOOST: float = 3.0    # Multiplicador con Shift
@@ -348,6 +357,44 @@ class Camera:
 
     # Configuración de órbita
     const ORBIT_INVERT_Y: bool = false         # Invertir eje Y en órbita
+
+    # Configuración de enfoque en límites
+    const BOUNDS_VIEW_MULTIPLIER: float = 0.75 # Multiplicador para ver límites
+    const BOUNDS_DEFAULT_SIZE: float = 1000.0  # Tamaño por defecto cuando inválido
+```
+
+### Configuración de UI
+
+```gdscript
+class UI:
+    # Panel de debug
+    const PANEL_MARGIN: int = 10               # Margen desde borde de pantalla
+    const PANEL_MIN_WIDTH: int = 250           # Ancho mínimo del panel
+    const PANEL_OPACITY: float = 0.85          # Opacidad del fondo (0-1)
+    const PANEL_CORNER_RADIUS: int = 8         # Radio de esquinas redondeadas
+    const PANEL_CONTENT_MARGIN: int = 12       # Margen de contenido interior
+    const PANEL_VERTICAL_MARGIN: int = 8       # Margen vertical interior
+    const PANEL_ITEM_SPACING: int = 6          # Espaciado entre elementos
+    const BUTTON_HEIGHT: int = 28              # Altura mínima de botón
+    const BUTTON_CORNER_RADIUS: int = 4        # Radio de esquinas de botón
+
+    # Colores
+    const BACKGROUND_COLOR: Color = Color(0.1, 0.1, 0.12, 0.85)  # Fondo oscuro semi-transparente
+    const TEXT_COLOR: Color = Color(0.9, 0.9, 0.9)               # Texto gris claro
+    const TEXT_SECONDARY_COLOR: Color = Color(0.7, 0.7, 0.7)     # Texto secundario
+    const TEXT_MUTED_COLOR: Color = Color(0.8, 0.8, 0.8)         # Texto atenuado
+    const ACCENT_COLOR: Color = Color(0.3, 0.6, 1.0)             # Acento azul
+    const SUCCESS_COLOR: Color = Color(0.3, 0.8, 0.4)            # Verde
+    const WARNING_COLOR: Color = Color(1.0, 0.7, 0.2)            # Amarillo/Naranja
+    const ERROR_COLOR: Color = Color(1.0, 0.3, 0.3)              # Rojo
+    const SEPARATOR_COLOR: Color = Color(0.3, 0.3, 0.35)         # Color de separadores
+    const BUTTON_NORMAL_COLOR: Color = Color(0.2, 0.2, 0.25)     # Botón normal
+    const BUTTON_HOVER_COLOR: Color = Color(0.25, 0.25, 0.3)     # Botón hover
+    const BUTTON_PRESSED_COLOR: Color = Color(0.15, 0.15, 0.2)   # Botón presionado
+
+    # Contador de FPS
+    const FPS_UPDATE_INTERVAL: float = 0.5     # Segundos entre actualizaciones
+    const FPS_SAMPLE_COUNT: int = 30           # Frames a promediar
 ```
 
 ---
@@ -942,6 +989,87 @@ camera_controller.enabled = false
 
 ---
 
+### Panel de Debug
+
+#### DebugPanel
+
+Panel de UI superpuesto para mostrar estadísticas de red y controles de visualización.
+
+**Características:**
+- Panel semi-transparente en esquina superior izquierda
+- Estadísticas en tiempo real (nodos, aristas, longitud de carreteras)
+- Información de cámara (posición, distancia)
+- Contador de FPS con código de colores
+- Toggles de visibilidad (nodos, carreteras, flechas)
+- Botones de acción (recargar red, reset cámara)
+- Diseño minimalista y responsive
+
+```gdscript
+class_name DebugPanel
+extends CanvasLayer
+
+# Señales
+signal nodes_visibility_changed(visible: bool)
+signal edges_visibility_changed(visible: bool)
+signal arrows_visibility_changed(visible: bool)
+signal reload_requested()
+signal reset_camera_requested()
+
+# Referencias externas (asignar desde escena padre)
+var camera_controller: CameraController
+var node_renderer: NodeRenderer
+var edge_renderer: EdgeRenderer
+
+# Establecer estadísticas de red
+func set_network_stats(nodes: int, edges: int, length_km: float) -> void
+
+# Actualizar stats desde renderers
+func update_from_renderers() -> void
+
+# Control de toggles
+func set_nodes_visible(visible: bool) -> void
+func set_edges_visible(visible: bool) -> void
+func set_arrows_visible(visible: bool) -> void
+func are_nodes_visible() -> bool
+func are_edges_visible() -> bool
+func are_arrows_visible() -> bool
+
+# Visibilidad del panel
+func set_panel_visible(visible: bool) -> void
+func is_panel_visible() -> bool
+func toggle_panel() -> void
+```
+
+**Uso:**
+
+```gdscript
+# Instanciar debug_panel.tscn
+var debug_panel := preload("res://scenes/ui/debug_panel.tscn").instantiate()
+add_child(debug_panel)
+
+# Asignar referencias
+debug_panel.camera_controller = $CameraRig
+debug_panel.node_renderer = $NodeRenderer
+debug_panel.edge_renderer = $EdgeRenderer
+
+# Conectar señales
+debug_panel.reload_requested.connect(_on_reload_network)
+debug_panel.reset_camera_requested.connect(_on_reset_camera)
+
+# Actualizar estadísticas
+debug_panel.update_from_renderers()
+
+# O manualmente
+debug_panel.set_network_stats(5000, 2500, 150.5)
+
+# Ocultar/mostrar panel (por ejemplo con tecla Tab)
+func _input(event: InputEvent) -> void:
+    if event.is_action_pressed("ui_focus_next"):
+        debug_panel.toggle_panel()
+```
+
+---
+
 ### Conversión de Coordenadas
 
 #### CoordinateConverter
@@ -1265,6 +1393,7 @@ func _spawn_road_visual(edge: EdgeData, points: Array[Vector3]) -> void:
 | `EdgeData`           | Datos de arista de red vial              |
 | `RoadNetwork`        | Contenedor de red completa               |
 | `CameraController`   | Controlador de cámara 3D con órbita/zoom |
+| `DebugPanel`         | Panel de estadísticas y controles UI     |
 | `NodeRenderer`       | Renderizado 3D de nodos con MultiMesh    |
 | `EdgeRenderer`       | Renderizado 3D de carreteras con ImmediateMesh |
 | `CoordinateConverter`| Conversión de coordenadas GPS a Godot    |

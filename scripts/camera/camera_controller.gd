@@ -207,12 +207,12 @@ func _pan(delta: Vector2) -> void:
 	var up := camera.basis.y
 
 	# Scale pan by distance for consistent feel
-	var pan_scale := _target_distance * Config.Camera.PAN_SPEED * 0.001
+	var pan_scale := _target_distance * Config.Camera.PAN_SPEED * Config.Camera.PAN_SCALE_FACTOR
 
 	_target_focal_point -= right * delta.x * pan_scale
 	_target_focal_point += up * delta.y * pan_scale
 
-	# Clamp height
+	# Clamp height (focal point can be at ground level but not below)
 	_target_focal_point.y = maxf(_target_focal_point.y, 0.0)
 
 
@@ -350,10 +350,10 @@ func focus_on_bounds(bounds: Dictionary) -> void:
 		return
 
 	var center: Vector3 = bounds.get("center", Vector3.ZERO)
-	var size: Vector3 = bounds.get("size", Vector3.ONE * 1000)
+	var size: Vector3 = bounds.get("size", Vector3.ONE * Config.Camera.BOUNDS_DEFAULT_SIZE)
 
 	var max_size := maxf(size.x, size.z)
-	var ideal_distance := maxf(max_size * 0.75, Config.Camera.DEFAULT_DISTANCE)
+	var ideal_distance := maxf(max_size * Config.Camera.BOUNDS_VIEW_MULTIPLIER, Config.Camera.DEFAULT_DISTANCE)
 
 	# Set as default view
 	set_default_view(center, ideal_distance)
