@@ -138,14 +138,14 @@ func _process(delta: float) -> void:
 		_lerp_t[i] += delta / tick_inv
 		var t := minf(_lerp_t[i], t_cap)
 
-		var pos     := _eval_pos(i, t)
-		var heading := _eval_heading(i, t)
-		var basis   := Basis(Vector3.UP, heading)
+		var pos       := _eval_pos(i, t)
+		var heading   := _eval_heading(i, t)
+		var rot_basis := Basis(Vector3.UP, heading)
 
 		_body_mmi.multimesh.set_instance_transform(
-			i, Transform3D(basis, pos + Vector3(0.0, Config.VehicleRendering.BODY_Y_OFFSET, 0.0)))
+			i, Transform3D(rot_basis, pos + Vector3(0.0, Config.VehicleRendering.BODY_Y_OFFSET, 0.0)))
 		_roof_mmi.multimesh.set_instance_transform(
-			i, Transform3D(basis, pos + Vector3(0.0, Config.VehicleRendering.ROOF_Y_OFFSET, 0.0)))
+			i, Transform3D(rot_basis, pos + Vector3(0.0, Config.VehicleRendering.ROOF_Y_OFFSET, 0.0)))
 
 
 ## Interpolated world position at parameter t for slot i.
@@ -367,12 +367,15 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 		var current_heading := _eval_heading(slot, t_now)
 		var error          := current_pos.distance_to(new_pos)
 
-		if error > Config.VehicleRendering.SNAP_DISTANCE:
-			# Large discontinuity (teleport / route reassignment): snap
+		var heading_change_deg := rad_to_deg(absf(angle_difference(current_heading, new_heading)))
+		var should_snap := error > Config.VehicleRendering.SNAP_DISTANCE or \
+						   heading_change_deg > Config.VehicleRendering.SNAP_HEADING_DEG
+		if should_snap:
+			# Large discontinuity or sharp turn: snap to avoid lerping off-road
 			_prev_pos[slot]     = new_pos
 			_prev_heading[slot] = new_heading
 			_lerp_t[slot]       = 1.0
-			_log_debug("Snap on slot %d (error %.1f m)" % [slot, error])
+			_log_debug("Snap on slot %d (error %.1f m, heading %.1f°)" % [slot, error, heading_change_deg])
 		else:
 			# Normal update: lerp from current rendered position to new target
 			_prev_pos[slot]     = current_pos

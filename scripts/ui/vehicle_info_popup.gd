@@ -11,6 +11,7 @@
 ##
 ## The popup auto-dismisses when the displayed vehicle finishes / is removed,
 ## or when the WebSocket disconnects.  A close button (×) also dismisses it.
+class_name VehicleInfoPopup
 extends CanvasLayer
 
 

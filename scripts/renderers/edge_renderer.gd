@@ -5,15 +5,6 @@ class_name EdgeRenderer
 extends Node3D
 
 
-## Emitted when edge is selected
-signal edge_selected(edge_data: EdgeData)
-
-## Emitted when edge is hovered
-signal edge_hovered(edge_data: EdgeData)
-
-## Emitted when hover ends
-signal edge_hover_ended()
-
 ## Emitted when rendering completes
 signal render_complete(edge_count: int)
 
@@ -432,8 +423,8 @@ func get_edge_by_id(edge_id: int) -> EdgeData:
 
 
 ## Set visibility for a road type
-func set_road_type_visible(road_type: EdgeData.RoadType, is_visible: bool) -> void:
-	_visible_road_types[road_type] = is_visible
+func set_road_type_visible(road_type: EdgeData.RoadType, visible_flag: bool) -> void:
+	_visible_road_types[road_type] = visible_flag
 
 
 ## Check if road type is visible
@@ -528,9 +519,9 @@ func get_rendered_bounds() -> Dictionary:
 
 
 ## Set visibility of all roads
-func set_roads_visible(is_visible: bool) -> void:
-	_road_mesh_instance.visible = is_visible
-	_arrow_mesh_instance.visible = is_visible
+func set_roads_visible(visible_flag: bool) -> void:
+	_road_mesh_instance.visible = visible_flag
+	_arrow_mesh_instance.visible = visible_flag
 
 
 ## Check if roads are visible
