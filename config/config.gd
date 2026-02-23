@@ -141,7 +141,8 @@ class VehicleRendering:
 	## Interpolation — smooth movement between 10 Hz server ticks
 	const TICK_INTERVAL: float = 0.1       # Expected server tick period (s) at 10 Hz
 	const SNAP_DISTANCE: float = 10.0      # Snap without lerp if error > this (metres)
-	const MAX_DEAD_RECKONING: float = 2.0  # Cap dead-reckoning time (seconds)
+	const SNAP_HEADING_DEG: float = 45.0   # Snap without lerp if heading changes > this (degrees)
+	const MAX_DEAD_RECKONING: float = 0.3  # Cap dead-reckoning time (seconds)
 
 
 ## Node rendering configuration

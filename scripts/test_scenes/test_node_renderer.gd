@@ -21,6 +21,11 @@ extends Node3D
 @onready var edge_renderer: EdgeRenderer = $EdgeRenderer
 @onready var environment_light: DirectionalLight3D = $DirectionalLight3D
 
+## Simulation UI / rendering — created programmatically in _ready()
+var _vehicle_renderer: VehicleRenderer
+var _sim_panel: SimControlPanel
+var _vehicle_popup: VehicleInfoPopup
+
 ## Camera control
 var _camera_speed: float = Config.Camera.KEYBOARD_MOVE_SPEED
 var _camera_rotation_speed: float = Config.Camera.ROTATION_SPEED
@@ -45,6 +50,7 @@ var _max_frame_samples: int = 60
 func _ready() -> void:
 	_setup_converter()
 	_setup_renderer()
+	_setup_sim_components()
 	_connect_signals()
 	_update_stats()
 
@@ -66,6 +72,27 @@ func _setup_renderer() -> void:
 	node_renderer.set_camera(camera)
 	edge_renderer.set_converter(_converter)
 	edge_renderer.set_camera(camera)
+
+
+func _setup_sim_components() -> void:
+	# VehicleRenderer — Node3D child, converter is set after map loads
+	_vehicle_renderer = VehicleRenderer.new()
+	add_child(_vehicle_renderer)
+	_vehicle_renderer.set_camera(camera)
+
+	# Simulation control panel (CanvasLayer, layer 125)
+	_sim_panel = SimControlPanel.new()
+	add_child(_sim_panel)
+
+	# Vehicle info popup (CanvasLayer, layer 126)
+	_vehicle_popup = VehicleInfoPopup.new()
+	add_child(_vehicle_popup)
+
+	# Wire vehicle click → info popup
+	_vehicle_renderer.vehicle_selected.connect(
+		func(vid: String, _state: Dictionary) -> void:
+			_vehicle_popup.show_vehicle(vid, get_viewport().get_mouse_position())
+	)
 
 
 func _connect_signals() -> void:
@@ -287,6 +314,7 @@ func _on_loading_completed(network: RoadNetwork) -> void:
 	_converter.set_bounds_from_network(network)
 	node_renderer.set_converter(_converter)
 	edge_renderer.set_converter(_converter)
+	_vehicle_renderer.set_converter(_converter)
 
 	if Config.should_log(Config.LogLevel.DEBUG):
 		print("[TestNetworkRenderer] Converter: %s" % _converter)
