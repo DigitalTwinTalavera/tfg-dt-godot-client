@@ -112,6 +112,34 @@ class NodeColors:
 	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)           # Gray (default)
 
 
+## Vehicle status colors for simulation visualization
+class VehicleColors:
+	const MOVING: Color = Color(0.2, 0.4, 1.0)    # Blue
+	const STOPPED: Color = Color(1.0, 0.2, 0.2)   # Red
+	const WAITING: Color = Color(1.0, 0.8, 0.0)   # Yellow/amber
+	const IDLE: Color = Color(1.0, 0.8, 0.0)      # Yellow/amber (same as WAITING)
+
+
+## Vehicle rendering configuration
+class VehicleRendering:
+	const MAX_VEHICLES: int = 200
+	## Car body dimensions in metres (length = front-to-back along local Z)
+	const BODY_LENGTH: float = 4.0
+	const BODY_HEIGHT: float = 1.5
+	const BODY_WIDTH: float = 2.0
+	const BODY_Y_OFFSET: float = 0.75  # Body centre above road  (= BODY_HEIGHT / 2)
+	## Car roof dimensions
+	const ROOF_LENGTH: float = 3.0
+	const ROOF_HEIGHT: float = 0.7
+	const ROOF_WIDTH: float = 1.5
+	const ROOF_Y_OFFSET: float = 1.85  # Roof centre above road  (= BODY_HEIGHT + ROOF_HEIGHT / 2)
+	## Road clearance (raises vehicles slightly to avoid Z-fighting)
+	const CAR_ELEVATION: float = 0.2
+	const MATERIAL_ROUGHNESS: float = 0.4
+	const MATERIAL_METALLIC: float = 0.2
+	const RAYCAST_MAX_DISTANCE: float = 10000.0
+
+
 ## Node rendering configuration
 class NodeRendering:
 	const DEFAULT_RADIUS: float = 3.0           # Node sphere radius in meters
