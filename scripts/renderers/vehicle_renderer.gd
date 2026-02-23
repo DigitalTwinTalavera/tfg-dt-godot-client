@@ -1,22 +1,24 @@
-## VehicleRenderer — renders all active simulation vehicles as instanced car shapes.
+## VehicleRenderer — renders all active simulation vehicles as instanced car shapes
+## with client-side position interpolation for smooth 60 FPS movement from 10 Hz ticks.
 ##
-## Uses two MultiMeshInstance3D (body box + roof box) for efficient single-draw-call
-## batch rendering at up to Config.VehicleRendering.MAX_VEHICLES vehicles.
+## Interpolation strategy (snapshot interpolation + dead reckoning):
+##   1. On each tick update:
+##        • prev_pos / prev_heading ← current smoothed position at that moment
+##        • target_pos / target_heading ← new server values
+##        • lerp_t reset to 0  (or 1 for first-ever update / snap)
+##   2. Each frame (_process):
+##        • lerp_t += delta / TICK_INTERVAL
+##        • lerp_t ≤ 1 → lerp(prev, target, lerp_t) for position & heading
+##        • lerp_t > 1 → dead reckoning: target + forward * velocity * overshoot_time
+##        • lerp_t capped at 1 + MAX_DEAD_RECKONING / TICK_INTERVAL to avoid runaway
+##   3. Snap if the new server position is > SNAP_DISTANCE metres away.
 ##
-## Usage:
-##   1. Add as a Node3D child in your 3D scene.
-##   2. Call set_converter(converter) with an initialised CoordinateConverter.
-##   3. Call set_camera(camera) so click-picking works.
-##   4. The renderer connects to VehicleManager automatically in _ready().
-##   5. Connect vehicle_selected to a VehicleInfoPopup (or similar).
-##
-## Car orientation: vehicle "nose" is along local -Z.
-##   heading = 0  → North (-Z)   rotation_y = 0
-##   heading = 90 → East  (+X)   rotation_y = π/2
+## Car orientation: vehicle nose is along local −Z.
+##   heading = 0   → North  (−Z),  rotation_y = 0
+##   heading = 90  → East   (+X),  rotation_y = π/2
 ##   Formula: rotation_y = deg_to_rad(heading)
 ##
-## Slot pool: MAX_VEHICLES slots are pre-allocated; when a vehicle is removed
-## the last occupied slot swaps into the freed slot (O(1) removal, no gaps).
+## Slot pool: MAX_VEHICLES slots pre-allocated; swap-to-fill-gap on removal (O(1)).
 class_name VehicleRenderer
 extends Node3D
 
@@ -25,23 +27,44 @@ extends Node3D
 signal vehicle_selected(vehicle_id: String, state: Dictionary)
 
 
-## ── Node references ────────────────────────────────────────────────────────
+# ── Node references ──────────────────────────────────────────────────────────
 var _body_mmi: MultiMeshInstance3D  # Car body boxes
 var _roof_mmi: MultiMeshInstance3D  # Car roof boxes
 
-## ── Injection ───────────────────────────────────────────────────────────────
+# ── Injection ────────────────────────────────────────────────────────────────
 var _converter: CoordinateConverter
 var _camera: Camera3D
 
-## ── Slot book-keeping ───────────────────────────────────────────────────────
+# ── Slot book-keeping ────────────────────────────────────────────────────────
 ## vehicle_id → slot index  (only contains active IDs)
 var _id_to_slot: Dictionary = {}
-
 ## slot index → vehicle_id  (indices 0 ..< _active_count are valid)
 var _slot_to_id: Array[String] = []
-
 ## Number of occupied slots (= visible_instance_count on both MultiMeshes)
 var _active_count: int = 0
+
+# ── Per-slot interpolation state ─────────────────────────────────────────────
+## All arrays are pre-allocated to MAX_VEHICLES in _build_multimesh().
+
+## World-space position at the *previous* tick (Y = CAR_ELEVATION)
+var _prev_pos: Array[Vector3] = []
+## World-space position from the *latest* tick
+var _target_pos: Array[Vector3] = []
+## Heading at the previous tick (radians, 0 = North)
+var _prev_heading: Array[float] = []
+## Heading from the latest tick (radians)
+var _target_heading: Array[float] = []
+## Speed from the latest tick (m/s) — used for dead reckoning
+var _velocity: Array[float] = []
+## Forward-direction components: X = sin(heading), Z = -cos(heading)
+var _forward_x: Array[float] = []
+var _forward_z: Array[float] = []
+## Interpolation parameter.
+##   -1  → slot has never received position data (skip rendering)
+##    0  → just received a tick update (start of lerp)
+##    ≤1 → interpolating between prev and target
+##    >1 → dead reckoning beyond last known position
+var _lerp_t: Array[float] = []
 
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -72,16 +95,13 @@ func set_vehicles_visible(visible_flag: bool) -> void:
 	_roof_mmi.visible = visible_flag
 
 
-## Returns the vehicle_id at the given screen position, or "" if none found.
+## Returns the vehicle_id at screen_pos using OBB ray test, or "" if none found.
 func get_vehicle_at_position(screen_pos: Vector2, camera: Camera3D) -> String:
 	if _active_count == 0 or not camera:
 		return ""
 
 	var ray_origin := camera.project_ray_origin(screen_pos)
 	var ray_dir    := camera.project_ray_normal(screen_pos)
-
-	var closest_id   := ""
-	var closest_dist := INF
 
 	# Half-extents for the combined body+roof bounding box
 	var he := Vector3(
@@ -90,7 +110,12 @@ func get_vehicle_at_position(screen_pos: Vector2, camera: Camera3D) -> String:
 		Config.VehicleRendering.BODY_LENGTH * 0.5
 	)
 
+	var closest_id   := ""
+	var closest_dist := INF
+
 	for i in range(_active_count):
+		if _lerp_t[i] < 0.0:
+			continue  # Not yet positioned
 		var body_t := _body_mmi.multimesh.get_instance_transform(i)
 		var dist   := _ray_obb_intersection(ray_origin, ray_dir, body_t, he)
 		if dist >= 0.0 and dist < closest_dist:
@@ -98,6 +123,46 @@ func get_vehicle_at_position(screen_pos: Vector2, camera: Camera3D) -> String:
 			closest_id   = _slot_to_id[i]
 
 	return closest_id
+
+
+# ── Per-frame interpolation ──────────────────────────────────────────────────
+
+func _process(delta: float) -> void:
+	var tick_inv   := Config.VehicleRendering.TICK_INTERVAL
+	var t_cap      := 1.0 + Config.VehicleRendering.MAX_DEAD_RECKONING / tick_inv
+
+	for i in range(_active_count):
+		if _lerp_t[i] < 0.0:
+			continue  # Awaiting first position data
+
+		_lerp_t[i] += delta / tick_inv
+		var t := minf(_lerp_t[i], t_cap)
+
+		var pos     := _eval_pos(i, t)
+		var heading := _eval_heading(i, t)
+		var basis   := Basis(Vector3.UP, heading)
+
+		_body_mmi.multimesh.set_instance_transform(
+			i, Transform3D(basis, pos + Vector3(0.0, Config.VehicleRendering.BODY_Y_OFFSET, 0.0)))
+		_roof_mmi.multimesh.set_instance_transform(
+			i, Transform3D(basis, pos + Vector3(0.0, Config.VehicleRendering.ROOF_Y_OFFSET, 0.0)))
+
+
+## Interpolated world position at parameter t for slot i.
+func _eval_pos(slot: int, t: float) -> Vector3:
+	if t <= 1.0:
+		return _prev_pos[slot].lerp(_target_pos[slot], t)
+	# Dead reckoning: extrapolate beyond the last known target
+	var overshoot := (t - 1.0) * Config.VehicleRendering.TICK_INTERVAL
+	return _target_pos[slot] + \
+		Vector3(_forward_x[slot], 0.0, _forward_z[slot]) * _velocity[slot] * overshoot
+
+
+## Interpolated heading (radians) at parameter t for slot i.
+func _eval_heading(slot: int, t: float) -> float:
+	if t <= 1.0:
+		return lerp_angle(_prev_heading[slot], _target_heading[slot], t)
+	return _target_heading[slot]  # Hold heading after dead reckoning
 
 
 # ── Input ────────────────────────────────────────────────────────────────────
@@ -119,33 +184,36 @@ func _unhandled_input(event: InputEvent) -> void:
 func _build_multimesh() -> void:
 	var max_v := Config.VehicleRendering.MAX_VEHICLES
 
-	_slot_to_id.resize(max_v)
-	_slot_to_id.fill("")
+	_slot_to_id.resize(max_v);    _slot_to_id.fill("")
+	_prev_pos.resize(max_v);      _prev_pos.fill(Vector3.ZERO)
+	_target_pos.resize(max_v);    _target_pos.fill(Vector3.ZERO)
+	_prev_heading.resize(max_v);  _prev_heading.fill(0.0)
+	_target_heading.resize(max_v);_target_heading.fill(0.0)
+	_velocity.resize(max_v);      _velocity.fill(0.0)
+	_forward_x.resize(max_v);     _forward_x.fill(0.0)
+	_forward_z.resize(max_v);     _forward_z.fill(-1.0)   # Default facing North
+	_lerp_t.resize(max_v);        _lerp_t.fill(-1.0)      # -1 = not initialised
 
 	_body_mmi = _make_mmi(
 		"VehicleBodyMesh",
-		Vector3(
-			Config.VehicleRendering.BODY_WIDTH,
-			Config.VehicleRendering.BODY_HEIGHT,
-			Config.VehicleRendering.BODY_LENGTH
-		),
+		Vector3(Config.VehicleRendering.BODY_WIDTH,
+				Config.VehicleRendering.BODY_HEIGHT,
+				Config.VehicleRendering.BODY_LENGTH),
 		max_v
 	)
 	add_child(_body_mmi)
 
 	_roof_mmi = _make_mmi(
 		"VehicleRoofMesh",
-		Vector3(
-			Config.VehicleRendering.ROOF_WIDTH,
-			Config.VehicleRendering.ROOF_HEIGHT,
-			Config.VehicleRendering.ROOF_LENGTH
-		),
+		Vector3(Config.VehicleRendering.ROOF_WIDTH,
+				Config.VehicleRendering.ROOF_HEIGHT,
+				Config.VehicleRendering.ROOF_LENGTH),
 		max_v
 	)
 	add_child(_roof_mmi)
 
 
-## Creates one MultiMeshInstance3D with a BoxMesh of the given size.
+## Creates a MultiMeshInstance3D with a BoxMesh of the given size.
 func _make_mmi(node_name: String, box_size: Vector3, max_instances: int) -> MultiMeshInstance3D:
 	var box := BoxMesh.new()
 	box.size = box_size
@@ -183,7 +251,6 @@ func _connect_signals() -> void:
 
 func _on_vehicle_added(vehicle_id: String, state: Dictionary) -> void:
 	if _id_to_slot.has(vehicle_id):
-		# Already allocated (e.g. vehicle_spawned arrived after first tick)
 		_update_slot(_id_to_slot[vehicle_id], state)
 		return
 
@@ -193,9 +260,10 @@ func _on_vehicle_added(vehicle_id: String, state: Dictionary) -> void:
 		return
 
 	var slot := _active_count
-	_active_count           += 1
-	_id_to_slot[vehicle_id]  = slot
-	_slot_to_id[slot]        = vehicle_id
+	_active_count            += 1
+	_id_to_slot[vehicle_id]   = slot
+	_slot_to_id[slot]         = vehicle_id
+	_lerp_t[slot]             = -1.0   # Signals first-update in _update_slot
 	_set_visible_count(_active_count)
 	_update_slot(slot, state)
 
@@ -210,33 +278,53 @@ func _on_vehicle_removed(vehicle_id: String) -> void:
 	if not _id_to_slot.has(vehicle_id):
 		return
 
-	var slot := _id_to_slot[vehicle_id]
+	var slot: int = _id_to_slot[vehicle_id]
 	_id_to_slot.erase(vehicle_id)
 	_active_count -= 1
 
 	if slot != _active_count:
 		# Swap last active slot into the freed slot (O(1) removal)
-		var last_id := _slot_to_id[_active_count]
-		_slot_to_id[slot]  = last_id
-		_id_to_slot[last_id] = slot
+		var last_id              := _slot_to_id[_active_count]
+		_slot_to_id[slot]         = last_id
+		_id_to_slot[last_id]      = slot
+		_copy_slot_state(_active_count, slot)
 
-		_body_mmi.multimesh.set_instance_transform(
-			slot, _body_mmi.multimesh.get_instance_transform(_active_count))
-		_body_mmi.multimesh.set_instance_color(
-			slot, _body_mmi.multimesh.get_instance_color(_active_count))
-		_roof_mmi.multimesh.set_instance_transform(
-			slot, _roof_mmi.multimesh.get_instance_transform(_active_count))
-		_roof_mmi.multimesh.set_instance_color(
-			slot, _roof_mmi.multimesh.get_instance_color(_active_count))
-
-	_slot_to_id[_active_count] = ""  # Mark freed slot as empty
+	_clear_slot(_active_count)
 	_set_visible_count(_active_count)
+
+
+## Copy all per-slot state from slot src to slot dst.
+func _copy_slot_state(src: int, dst: int) -> void:
+	_prev_pos[dst]      = _prev_pos[src]
+	_target_pos[dst]    = _target_pos[src]
+	_prev_heading[dst]  = _prev_heading[src]
+	_target_heading[dst]= _target_heading[src]
+	_velocity[dst]      = _velocity[src]
+	_forward_x[dst]     = _forward_x[src]
+	_forward_z[dst]     = _forward_z[src]
+	_lerp_t[dst]        = _lerp_t[src]
+	# Mirror MultiMesh instance data so the frame before _process() runs looks correct
+	_body_mmi.multimesh.set_instance_transform(dst,
+		_body_mmi.multimesh.get_instance_transform(src))
+	_body_mmi.multimesh.set_instance_color(dst,
+		_body_mmi.multimesh.get_instance_color(src))
+	_roof_mmi.multimesh.set_instance_transform(dst,
+		_roof_mmi.multimesh.get_instance_transform(src))
+	_roof_mmi.multimesh.set_instance_color(dst,
+		_roof_mmi.multimesh.get_instance_color(src))
+
+
+## Reset a slot's state to its uninitialised defaults.
+func _clear_slot(slot: int) -> void:
+	_slot_to_id[slot] = ""
+	_lerp_t[slot]     = -1.0  # Prevents _process from rendering this slot
 
 
 func _on_ws_connected() -> void:
 	_active_count = 0
 	_id_to_slot.clear()
 	_slot_to_id.fill("")
+	_lerp_t.fill(-1.0)
 	_set_visible_count(0)
 	_log_info("Reset on WebSocket connect")
 
@@ -246,7 +334,7 @@ func _set_visible_count(count: int) -> void:
 	_roof_mmi.multimesh.visible_instance_count = count
 
 
-# ── Per-instance update ──────────────────────────────────────────────────────
+# ── Target update ────────────────────────────────────────────────────────────
 
 func _update_slot(slot: int, state: Dictionary) -> void:
 	if not _converter or not _converter.is_initialized():
@@ -254,27 +342,51 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 	if not state.has("lon") or not state.has("lat"):
 		return  # No position data yet; will be applied on next update
 
-	var lon    : float  = state["lon"]
-	var lat    : float  = state["lat"]
-	var heading: float  = state.get("h", 0.0)
-	var status : String = state.get("status", "idle")
+	var lon        : float  = state["lon"]
+	var lat        : float  = state["lat"]
+	var heading_deg: float  = state.get("h",      0.0)
+	var speed      : float  = state.get("v",      0.0)
+	var status     : String = state.get("status", "idle")
 
-	var base_pos: Vector3 = _converter.gps_to_godot(lon, lat)
-	base_pos.y = Config.VehicleRendering.CAR_ELEVATION
+	var new_pos     := _converter.gps_to_godot(lon, lat)
+	new_pos.y        = Config.VehicleRendering.CAR_ELEVATION
+	var new_heading := deg_to_rad(heading_deg)
 
-	# heading = 0 → North (-Z), 90 → East (+X)
-	# Basis(UP, angle) rotates local -Z by angle:
-	#   angle=0    → local -Z = world -Z (North) ✓
-	#   angle=π/2  → local -Z = world +X (East)  ✓
-	var rot_y := deg_to_rad(heading)
-	var basis := Basis(Vector3.UP, rot_y)
+	if _lerp_t[slot] < 0.0:
+		# ── First update for this slot: snap directly to position ──────────
+		_prev_pos[slot]      = new_pos
+		_prev_heading[slot]  = new_heading
+		_lerp_t[slot]        = 1.0  # Render at target immediately
+		_log_debug("Slot %d initialised at (%.1f, %.1f, %.1f)" % [slot, new_pos.x, new_pos.y, new_pos.z])
+	else:
+		# ── Subsequent update: compute where the vehicle currently is ──────
+		var t_now          := minf(_lerp_t[slot],
+								   1.0 + Config.VehicleRendering.MAX_DEAD_RECKONING /
+										 Config.VehicleRendering.TICK_INTERVAL)
+		var current_pos    := _eval_pos(slot, t_now)
+		var current_heading := _eval_heading(slot, t_now)
+		var error          := current_pos.distance_to(new_pos)
 
-	var body_pos := base_pos + Vector3(0.0, Config.VehicleRendering.BODY_Y_OFFSET, 0.0)
-	var roof_pos := base_pos + Vector3(0.0, Config.VehicleRendering.ROOF_Y_OFFSET, 0.0)
+		if error > Config.VehicleRendering.SNAP_DISTANCE:
+			# Large discontinuity (teleport / route reassignment): snap
+			_prev_pos[slot]     = new_pos
+			_prev_heading[slot] = new_heading
+			_lerp_t[slot]       = 1.0
+			_log_debug("Snap on slot %d (error %.1f m)" % [slot, error])
+		else:
+			# Normal update: lerp from current rendered position to new target
+			_prev_pos[slot]     = current_pos
+			_prev_heading[slot] = current_heading
+			_lerp_t[slot]       = 0.0
 
-	_body_mmi.multimesh.set_instance_transform(slot, Transform3D(basis, body_pos))
-	_roof_mmi.multimesh.set_instance_transform(slot, Transform3D(basis, roof_pos))
+	# Always update target and kinematics
+	_target_pos[slot]      = new_pos
+	_target_heading[slot]  = new_heading
+	_velocity[slot]        = speed
+	_forward_x[slot]       = sin(new_heading)   # East component
+	_forward_z[slot]       = -cos(new_heading)  # South component (-cos because +Z = South)
 
+	# Status colour is applied immediately (no visual interpolation needed)
 	var color := _get_status_color(status)
 	_body_mmi.multimesh.set_instance_color(slot, color)
 	_roof_mmi.multimesh.set_instance_color(slot, color)
@@ -282,26 +394,22 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 
 func _get_status_color(status: String) -> Color:
 	match status:
-		"moving":
-			return Config.VehicleColors.MOVING
-		"stopped":
-			return Config.VehicleColors.STOPPED
-		"waiting":
-			return Config.VehicleColors.WAITING
-		_:
-			return Config.VehicleColors.IDLE
+		"moving":  return Config.VehicleColors.MOVING
+		"stopped": return Config.VehicleColors.STOPPED
+		"waiting": return Config.VehicleColors.WAITING
+		_:         return Config.VehicleColors.IDLE
 
 
 # ── Ray picking ──────────────────────────────────────────────────────────────
 
 ## Transforms the ray into the OBB's local space, then runs a slab AABB test.
 func _ray_obb_intersection(
-	ray_origin  : Vector3,
-	ray_dir     : Vector3,
+	ray_origin   : Vector3,
+	ray_dir      : Vector3,
 	obb_transform: Transform3D,
-	half_extents: Vector3
+	half_extents : Vector3
 ) -> float:
-	var inv         := obb_transform.affine_inverse()
+	var inv          := obb_transform.affine_inverse()
 	var local_origin := inv * ray_origin
 	var local_dir    := inv.basis * ray_dir
 	return _ray_aabb_test(local_origin, local_dir, half_extents)
@@ -343,6 +451,11 @@ func _ray_aabb_test(
 
 func _log_info(message: String) -> void:
 	if Config.should_log(Config.LogLevel.INFO):
+		print("[VehicleRenderer] %s" % message)
+
+
+func _log_debug(message: String) -> void:
+	if Config.should_log(Config.LogLevel.DEBUG):
 		print("[VehicleRenderer] %s" % message)
 
 
