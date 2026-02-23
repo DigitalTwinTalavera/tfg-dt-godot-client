@@ -21,6 +21,12 @@ config/icon="res://icon.svg"
 
 HTTPManager="*res://scripts/autoload/http_manager.gd"
 NetworkManager="*res://scripts/autoload/network_manager.gd"
+SimulationClient="*res://scripts/autoload/simulation_client.gd"
+VehicleManager="*res://scripts/autoload/vehicle_manager.gd"
+SimulationStateManager="*res://scripts/autoload/simulation_state_manager.gd"
+TrafficLightManager="*res://scripts/autoload/traffic_light_manager.gd"
+IncidentManager="*res://scripts/autoload/incident_manager.gd"
+AnalyticsManager="*res://scripts/autoload/analytics_manager.gd"
 
 [display]
 
