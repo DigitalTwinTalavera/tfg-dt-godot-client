@@ -138,6 +138,10 @@ class VehicleRendering:
 	const MATERIAL_ROUGHNESS: float = 0.4
 	const MATERIAL_METALLIC: float = 0.2
 	const RAYCAST_MAX_DISTANCE: float = 10000.0
+	## Interpolation — smooth movement between 10 Hz server ticks
+	const TICK_INTERVAL: float = 0.1       # Expected server tick period (s) at 10 Hz
+	const SNAP_DISTANCE: float = 10.0      # Snap without lerp if error > this (metres)
+	const MAX_DEAD_RECKONING: float = 2.0  # Cap dead-reckoning time (seconds)
 
 
 ## Node rendering configuration
