@@ -1,0 +1,143 @@
+## VehicleManager autoload singleton
+## Receives vehicle data from SimulationClient and maintains the live
+## vehicle state dictionary used by renderers and debug panels.
+##
+## Vehicle state dict keys (from backend tick message):
+##   id        - String vehicle ID ("v_001")
+##   lon, lat  - float GPS position
+##   v         - float velocity (m/s)
+##   a         - float acceleration (m/s²)
+##   h         - float compass heading (0=N, 90=E)
+##   status    - String ("idle" | "moving" | "finished")
+##   edge_idx  - int current edge index in route
+##   progress  - float 0.0..1.0 progress along current edge
+extends Node
+
+
+## Emitted when a vehicle is newly added to the active set
+signal vehicle_added(vehicle_id: String, state: Dictionary)
+
+## Emitted when a vehicle's state changes (delta update)
+signal vehicle_updated(vehicle_id: String, state: Dictionary)
+
+## Emitted when a vehicle is removed from the active set
+signal vehicle_removed(vehicle_id: String)
+
+## Emitted at the end of each tick with the total number of vehicles updated
+signal vehicles_batch_updated(count: int)
+
+
+## Active vehicles: id (String) → state (Dictionary)
+var vehicles: Dictionary = {}
+
+## Cumulative counters (reset on reconnect)
+var total_spawned: int = 0
+var total_finished: int = 0
+
+
+func _ready() -> void:
+	SimulationClient.tick_received.connect(_on_tick)
+	SimulationClient.vehicle_spawned.connect(_on_vehicle_spawned)
+	SimulationClient.vehicle_finished.connect(_on_vehicle_finished)
+	SimulationClient.connected.connect(_on_connected)
+	_log_info("Initialized")
+
+
+## Returns the number of currently tracked vehicles
+func get_vehicle_count() -> int:
+	return vehicles.size()
+
+
+## Returns the state dict for a specific vehicle, or an empty dict if not found
+func get_vehicle(vehicle_id: String) -> Dictionary:
+	return vehicles.get(vehicle_id, {})
+
+
+## Returns all vehicle IDs currently tracked
+func get_all_ids() -> Array:
+	return vehicles.keys()
+
+
+## Returns a snapshot copy of all vehicle states
+func get_all_vehicles() -> Dictionary:
+	return vehicles.duplicate(true)
+
+
+## Handlers ----------------------------------------------------------------
+
+func _on_tick(_tick: int, _sim_time: float, vehicle_states: Array) -> void:
+	var updated := 0
+
+	for state in vehicle_states:
+		if not state is Dictionary:
+			continue
+		var vid := JsonUtils.get_string(state, "id", "")
+		if vid.is_empty():
+			continue
+
+		if vehicles.has(vid):
+			# Delta update: merge changed fields into existing entry
+			vehicles[vid].merge(state, true)
+			vehicle_updated.emit(vid, state)
+		else:
+			# New vehicle seen for the first time via tick (before spawned msg)
+			vehicles[vid] = state.duplicate()
+			vehicle_added.emit(vid, state)
+
+		updated += 1
+
+	if updated > 0:
+		vehicles_batch_updated.emit(updated)
+
+
+func _on_vehicle_spawned(vehicle_id: String, data: Dictionary) -> void:
+	if not vehicles.has(vehicle_id):
+		vehicles[vehicle_id] = {"id": vehicle_id}
+	vehicles[vehicle_id].merge(data, true)
+	total_spawned += 1
+	vehicle_added.emit(vehicle_id, vehicles[vehicle_id])
+	_log_info(
+		"Vehicle spawned: %s  (active: %d  total spawned: %d)" % [
+			vehicle_id,
+			vehicles.size(),
+			total_spawned,
+		]
+	)
+
+
+func _on_vehicle_finished(vehicle_id: String) -> void:
+	if vehicles.has(vehicle_id):
+		vehicles.erase(vehicle_id)
+		total_finished += 1
+		vehicle_removed.emit(vehicle_id)
+		_log_debug(
+			"Vehicle finished: %s  (remaining: %d  total finished: %d)" % [
+				vehicle_id,
+				vehicles.size(),
+				total_finished,
+			]
+		)
+
+
+func _on_connected() -> void:
+	vehicles.clear()
+	total_spawned = 0
+	total_finished = 0
+	_log_info("Reset — connection established")
+
+
+## Logging -----------------------------------------------------------------
+
+func _log_info(message: String) -> void:
+	if Config.should_log(Config.LogLevel.INFO):
+		print("[VehicleManager] %s" % message)
+
+
+func _log_debug(message: String) -> void:
+	if Config.should_log(Config.LogLevel.DEBUG):
+		print("[VehicleManager] %s" % message)
+
+
+func _log_warning(message: String) -> void:
+	if Config.should_log(Config.LogLevel.WARNING):
+		push_warning("[VehicleManager] %s" % message)

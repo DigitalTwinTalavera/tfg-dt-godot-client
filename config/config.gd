@@ -51,6 +51,37 @@ const NETWORK_PROGRESS_EDGES_WEIGHT: float = 0.5  # Progress weight for edges lo
 const HTTP_TIMEOUT_BUFFER: float = 1.0  # Extra buffer added to timeout timer
 
 
+## WebSocket client configuration
+const WS_MAX_QUEUE_SIZE: int = 1000           # Maximum messages buffered before dropping oldest
+const WS_MAX_MESSAGES_PER_FRAME: int = 50     # Messages drained per _process() call
+const WS_BASE_RECONNECT_DELAY: float = 1.0    # Initial reconnect wait (seconds)
+const WS_MAX_RECONNECT_DELAY: float = 60.0    # Maximum reconnect wait (seconds)
+const WS_STATS_LOG_INTERVAL: float = 5.0      # Seconds between periodic stat logs
+
+
+## Simulation API endpoints
+class SimEndpoints:
+	const START: String = "/simulation/start"
+	const STOP: String = "/simulation/stop"
+	const PAUSE: String = "/simulation/pause"
+	const RESUME: String = "/simulation/resume"
+	const STATUS: String = "/simulation/status"
+	const CONFIG: String = "/simulation/config"
+	const VEHICLES: String = "/simulation/vehicles"
+	const VEHICLES_SPAWN: String = "/simulation/vehicles/spawn"
+
+
+## WebSocket message type constants
+class SimMessageTypes:
+	const TICK: String = "tick"
+	const SIM_STATE: String = "sim_state"
+	const VEHICLE_SPAWNED: String = "vehicle_spawned"
+	const VEHICLE_FINISHED: String = "vehicle_finished"
+	const TRAFFIC_LIGHT: String = "traffic_light"
+	const INCIDENT_CREATED: String = "incident_created"
+	const ANALYTICS_UPDATE: String = "analytics_update"
+
+
 ## Road type colors for visualization (matching OSM road hierarchy)
 class RoadColors:
 	const MOTORWAY: Color = Color(0.0, 0.2, 0.4)       # Dark Blue #003366
