@@ -254,7 +254,11 @@ func _on_load_pressed() -> void:
 	load_button.disabled = true
 
 	if NetworkManager.is_loaded:
-		# Already loaded, just render
+		# Already loaded — update converter bounds and propagate to all renderers
+		_converter.set_bounds_from_network(NetworkManager.network)
+		node_renderer.set_converter(_converter)
+		edge_renderer.set_converter(_converter)
+		_vehicle_renderer.set_converter(_converter)
 		_render_network()
 		load_button.disabled = false
 	else:
