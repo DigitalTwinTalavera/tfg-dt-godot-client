@@ -14,7 +14,7 @@
 extends Node
 
 
-## Emitted when a vehicle is newly added to the active set
+## Emitted when a vehicle is newly added to the active set (individual path)
 signal vehicle_added(vehicle_id: String, state: Dictionary)
 
 ## Emitted when a vehicle's state changes (delta update)
@@ -22,6 +22,10 @@ signal vehicle_updated(vehicle_id: String, state: Dictionary)
 
 ## Emitted when a vehicle is removed from the active set
 signal vehicle_removed(vehicle_id: String)
+
+## Emitted once per tick with all new vehicles as Array of [vehicle_id, state]
+## Use this instead of vehicle_added for batch rendering (avoids N GPU calls)
+signal vehicles_batch_added(batch: Array)
 
 ## Emitted at the end of each tick with the total number of vehicles updated
 signal vehicles_batch_updated(count: int)
@@ -39,6 +43,7 @@ func _ready() -> void:
 	SimulationClient.tick_received.connect(_on_tick)
 	SimulationClient.vehicle_spawned.connect(_on_vehicle_spawned)
 	SimulationClient.vehicle_finished.connect(_on_vehicle_finished)
+	SimulationClient.vehicles_batch_spawned.connect(_on_vehicles_batch_spawned)
 	SimulationClient.connected.connect(_on_connected)
 	_log_info("Initialized")
 
@@ -67,6 +72,7 @@ func get_all_vehicles() -> Dictionary:
 
 func _on_tick(_tick: int, _sim_time: float, vehicle_states: Array) -> void:
 	var updated := 0
+	var new_batch: Array = []
 
 	for state in vehicle_states:
 		if not state is Dictionary:
@@ -80,11 +86,16 @@ func _on_tick(_tick: int, _sim_time: float, vehicle_states: Array) -> void:
 			vehicles[vid].merge(state, true)
 			vehicle_updated.emit(vid, state)
 		else:
-			# New vehicle seen for the first time via tick (before spawned msg)
+			# New vehicle seen for the first time via tick
 			vehicles[vid] = state.duplicate()
-			vehicle_added.emit(vid, state)
+			new_batch.append([vid, vehicles[vid]])
 
 		updated += 1
+
+	# Emit all new vehicles in a single batch signal so the renderer can
+	# allocate all slots and call _set_visible_count() only once.
+	if new_batch.size() > 0:
+		vehicles_batch_added.emit(new_batch)
 
 	if updated > 0:
 		vehicles_batch_updated.emit(updated)
@@ -103,6 +114,25 @@ func _on_vehicle_spawned(vehicle_id: String, data: Dictionary) -> void:
 			total_spawned,
 		]
 	)
+
+
+func _on_vehicles_batch_spawned(batch: Array) -> void:
+	var pairs: Array = []
+	for data in batch:
+		if not data is Dictionary:
+			continue
+		var vid := JsonUtils.get_string(data, "id", "")
+		if vid.is_empty():
+			continue
+		if not vehicles.has(vid):
+			vehicles[vid] = data.duplicate()
+		else:
+			vehicles[vid].merge(data, true)
+		pairs.append([vid, vehicles[vid]])
+	total_spawned += pairs.size()
+	if pairs.size() > 0:
+		vehicles_batch_added.emit(pairs)
+	_log_info("Batch spawned: %d vehicles (active: %d)" % [pairs.size(), vehicles.size()])
 
 
 func _on_vehicle_finished(vehicle_id: String) -> void:

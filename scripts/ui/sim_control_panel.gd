@@ -180,8 +180,8 @@ func _build_ui() -> void:
 
 	_spawn_count = SpinBox.new()
 	_spawn_count.min_value                = 1
-	_spawn_count.max_value                = 50
-	_spawn_count.value                    = 5
+	_spawn_count.max_value                = 10000
+	_spawn_count.value                    = 100
 	_spawn_count.step                     = 1
 	_spawn_count.size_flags_horizontal    = Control.SIZE_EXPAND_FILL
 	spawn_row.add_child(_spawn_count)
@@ -347,7 +347,8 @@ func _on_spawn_pressed() -> void:
 	_update_button_states(SimulationStateManager.current_state)
 
 	if result.success:
-		_log_info("Spawned %d vehicles" % count)
+		var requested: int = result.data.get("requested", count)
+		_log_info("Spawning %d vehicles (background)..." % requested)
 	else:
 		_log_warning("Spawn failed: %s" % result.get_description())
 

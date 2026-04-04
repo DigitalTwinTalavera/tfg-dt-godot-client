@@ -242,6 +242,7 @@ func _make_mmi(node_name: String, box_size: Vector3, max_instances: int) -> Mult
 
 func _connect_signals() -> void:
 	VehicleManager.vehicle_added.connect(_on_vehicle_added)
+	VehicleManager.vehicles_batch_added.connect(_on_vehicles_batch_added)
 	VehicleManager.vehicle_updated.connect(_on_vehicle_updated)
 	VehicleManager.vehicle_removed.connect(_on_vehicle_removed)
 	SimulationClient.connected.connect(_on_ws_connected)
@@ -266,6 +267,29 @@ func _on_vehicle_added(vehicle_id: String, state: Dictionary) -> void:
 	_lerp_t[slot]             = -1.0   # Signals first-update in _update_slot
 	_set_visible_count(_active_count)
 	_update_slot(slot, state)
+
+
+## Handles a batch of new vehicles arriving in a single tick.
+## Allocates all slots first, then calls _set_visible_count() once at the end
+## instead of once per vehicle — critical for performance with 10k vehicles.
+func _on_vehicles_batch_added(batch: Array) -> void:
+	var max_v := Config.VehicleRendering.MAX_VEHICLES
+	for pair in batch:
+		var vehicle_id: String = pair[0]
+		var state: Dictionary = pair[1]
+		if _id_to_slot.has(vehicle_id):
+			_update_slot(_id_to_slot[vehicle_id], state)
+			continue
+		if _active_count >= max_v:
+			_log_warning("MAX_VEHICLES (%d) reached — skipping batch remainder" % max_v)
+			break
+		var slot := _active_count
+		_active_count += 1
+		_id_to_slot[vehicle_id] = slot
+		_slot_to_id[slot] = vehicle_id
+		_lerp_t[slot] = -1.0
+		_update_slot(slot, state)
+	_set_visible_count(_active_count)
 
 
 func _on_vehicle_updated(vehicle_id: String, state: Dictionary) -> void:

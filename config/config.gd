@@ -77,6 +77,7 @@ class SimMessageTypes:
 	const SIM_STATE: String = "sim_state"
 	const VEHICLE_SPAWNED: String = "vehicle_spawned"
 	const VEHICLE_FINISHED: String = "vehicle_finished"
+	const VEHICLES_BATCH_SPAWNED: String = "vehicles_batch_spawned"
 	const TRAFFIC_LIGHT: String = "traffic_light"
 	const INCIDENT_CREATED: String = "incident_created"
 	const ANALYTICS_UPDATE: String = "analytics_update"
@@ -122,7 +123,7 @@ class VehicleColors:
 
 ## Vehicle rendering configuration
 class VehicleRendering:
-	const MAX_VEHICLES: int = 200
+	const MAX_VEHICLES: int = 10000
 	## Car body dimensions in metres (length = front-to-back along local Z)
 	const BODY_LENGTH: float = 4.0
 	const BODY_HEIGHT: float = 1.5

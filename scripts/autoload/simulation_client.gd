@@ -33,6 +33,10 @@ signal vehicle_spawned(vehicle_id: String, data: Dictionary)
 ## Fired when a vehicle completes its route and is removed
 signal vehicle_finished(vehicle_id: String)
 
+## Fired when a batch of vehicles is spawned at once (vehicles_batch_spawned WS message).
+## Contains the raw array of vehicle dicts from the backend.
+signal vehicles_batch_spawned(vehicles: Array)
+
 ## Fired for traffic light state updates
 signal traffic_light_received(data: Dictionary)
 
@@ -147,6 +151,12 @@ func _setup_reconnect_timer() -> void:
 func _connect_to_backend() -> void:
 	_state = ConnectionState.CONNECTING
 	_ws = WebSocketPeer.new()
+	# Aumentar el buffer de recepción para soportar tick messages con miles
+	# de vehículos. El límite por defecto de Godot es 64 KB, lo que causa
+	# desconexión con código 1009 ("Message too big") cuando el payload
+	# supera ese umbral. 4 MB cubre tick messages con hasta ~30 000 vehículos.
+	_ws.inbound_buffer_size  = 4 * 1024 * 1024   # 4 MB
+	_ws.outbound_buffer_size = 256 * 1024          # 256 KB (saliente es pequeño)
 	var err := _ws.connect_to_url(Config.ws_url)
 	if err != OK:
 		_handle_connection_failed("connect_to_url returned error %d" % err)
@@ -218,6 +228,10 @@ func _route_message(msg: Dictionary) -> void:
 		Config.SimMessageTypes.VEHICLE_SPAWNED:
 			var vid := JsonUtils.get_string(msg, "vehicle_id", "")
 			vehicle_spawned.emit(vid, msg)
+
+		Config.SimMessageTypes.VEHICLES_BATCH_SPAWNED:
+			var arr := JsonUtils.get_array(msg, "vehicles", [])
+			vehicles_batch_spawned.emit(arr)
 
 		Config.SimMessageTypes.VEHICLE_FINISHED:
 			var vid := JsonUtils.get_string(msg, "vehicle_id", "")
