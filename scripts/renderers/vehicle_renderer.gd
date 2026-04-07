@@ -64,7 +64,28 @@ var _forward_z: Array[float] = []
 ##    0  → just received a tick update (start of lerp)
 ##    ≤1 → interpolating between prev and target
 ##    >1 → dead reckoning beyond last known position
-var _lerp_t: Array[float] = []
+## PackedFloat32Array (NOT Array[float]): memoria contigua sin mutex por elemento,
+## lo que permite que los worker threads escriban índices distintos de forma segura.
+var _lerp_t: PackedFloat32Array
+
+# ── Parallel-update output buffers ───────────────────────────────────────────
+## Pre-allocated to MAX_VEHICLES. Worker threads write their slice by index;
+## the main thread reads after WorkerThreadPool.wait_for_group_task_completion.
+## PackedVector3Array / PackedFloat32Array use contiguous memory, so writing
+## different indices from different threads is safe without a mutex.
+var _out_pos:     PackedVector3Array   ## computed world-space positions
+var _out_heading: PackedFloat32Array   ## computed headings (radians)
+
+# ── MultiMesh raw buffers ─────────────────────────────────────────────────────
+## Layout per instance (TRANSFORM_3D + use_colors, use_custom_data=false):
+##   floats  0-11 : Transform3D (basis columns x/y/z then origin)
+##   floats 12-15 : Color RGBA
+## Workers write the transform portion (0-11) per frame; _update_slot writes
+## the color portion (12-15) only on status change. The main thread uploads
+## both buffers in one multimesh.buffer = ... call, replacing 10 000
+## individual set_instance_transform() calls per frame.
+var _body_buffer: PackedFloat32Array
+var _roof_buffer: PackedFloat32Array
 
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -128,24 +149,52 @@ func get_vehicle_at_position(screen_pos: Vector2, camera: Camera3D) -> String:
 # ── Per-frame interpolation ──────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
-	var tick_inv   := Config.VehicleRendering.TICK_INTERVAL
-	var t_cap      := 1.0 + Config.VehicleRendering.MAX_DEAD_RECKONING / tick_inv
+	if _active_count == 0:
+		return
 
+	var tick_inv := Config.VehicleRendering.TICK_INTERVAL
+	var t_cap    := 1.0 + Config.VehicleRendering.MAX_DEAD_RECKONING / tick_inv
+
+	# ── 1. Compute interpolated positions/headings in parallel ────────────────
+	# _compute_vehicle_transform usa sólo PackedXxxArray y aritmética pura,
+	# por lo que es segura llamarla desde worker threads de Godot 4.
+	var gid := WorkerThreadPool.add_group_task(
+		_compute_vehicle_transform.bind(delta, tick_inv, t_cap),
+		_active_count,
+		-1,   # -1 = usar todos los worker threads disponibles
+		true  # high_priority
+	)
+	WorkerThreadPool.wait_for_group_task_completion(gid)
+
+	# ── 2. Escribir transforms en los buffers y subir de golpe a la GPU ───────
+	# Cada instancia ocupa 16 floats: 12 de Transform3D + 4 de Color RGBA.
+	# Los colores (floats 12-15) los escribe _update_slot solo cuando cambia el
+	# status: aquí solo sobreescribimos los 12 de transform (0-11).
+	var body_y  := Config.VehicleRendering.BODY_Y_OFFSET
+	var roof_y  := Config.VehicleRendering.ROOF_Y_OFFSET
 	for i in range(_active_count):
 		if _lerp_t[i] < 0.0:
-			continue  # Awaiting first position data
+			continue
+		var pos     := _out_pos[i]
+		var heading := _out_heading[i]
+		var c       := cos(heading)
+		var s       := sin(heading)
+		# Basis(Vector3.UP, h): basis.x=(c,0,-s), basis.y=(0,1,0), basis.z=(s,0,c)
+		# Buffer row-major [bx[k], by[k], bz[k], origin[k]] para k=0,1,2:
+		#   Row 0: [ c,  0,  s, pos.x ]   Row 1: [ 0, 1, 0, pos.y ]   Row 2: [-s, 0, c, pos.z ]
+		var off := i * 16
+		# body
+		_body_buffer[off +  0] =  c;  _body_buffer[off +  1] = 0.0; _body_buffer[off +  2] =  s; _body_buffer[off +  3] = pos.x
+		_body_buffer[off +  4] = 0.0; _body_buffer[off +  5] = 1.0; _body_buffer[off +  6] = 0.0; _body_buffer[off +  7] = pos.y + body_y
+		_body_buffer[off +  8] = -s;  _body_buffer[off +  9] = 0.0; _body_buffer[off + 10] =  c;  _body_buffer[off + 11] = pos.z
+		# roof
+		_roof_buffer[off +  0] =  c;  _roof_buffer[off +  1] = 0.0; _roof_buffer[off +  2] =  s; _roof_buffer[off +  3] = pos.x
+		_roof_buffer[off +  4] = 0.0; _roof_buffer[off +  5] = 1.0; _roof_buffer[off +  6] = 0.0; _roof_buffer[off +  7] = pos.y + roof_y
+		_roof_buffer[off +  8] = -s;  _roof_buffer[off +  9] = 0.0; _roof_buffer[off + 10] =  c;  _roof_buffer[off + 11] = pos.z
 
-		_lerp_t[i] += delta / tick_inv
-		var t := minf(_lerp_t[i], t_cap)
-
-		var pos       := _eval_pos(i, t)
-		var heading   := _eval_heading(i, t)
-		var rot_basis := Basis(Vector3.UP, heading)
-
-		_body_mmi.multimesh.set_instance_transform(
-			i, Transform3D(rot_basis, pos + Vector3(0.0, Config.VehicleRendering.BODY_Y_OFFSET, 0.0)))
-		_roof_mmi.multimesh.set_instance_transform(
-			i, Transform3D(rot_basis, pos + Vector3(0.0, Config.VehicleRendering.ROOF_Y_OFFSET, 0.0)))
+	# Una sola subida de datos a la GPU por mesh (en lugar de N llamadas individuales)
+	_body_mmi.multimesh.buffer = _body_buffer
+	_roof_mmi.multimesh.buffer = _roof_buffer
 
 
 ## Interpolated world position at parameter t for slot i.
@@ -163,6 +212,37 @@ func _eval_heading(slot: int, t: float) -> float:
 	if t <= 1.0:
 		return lerp_angle(_prev_heading[slot], _target_heading[slot], t)
 	return _target_heading[slot]  # Hold heading after dead reckoning
+
+
+## Worker-thread entry point — llamado por WorkerThreadPool.add_group_task().
+## Solo usa PackedXxxArray y aritmética pura (sin métodos de Node ni Array[T]).
+## Escribe el resultado en _out_pos[i] y _out_heading[i], que son PackedXxxArray
+## con memoria contigua: escrituras en índices distintos son thread-safe.
+func _compute_vehicle_transform(i: int, delta: float, tick_inv: float, t_cap: float) -> void:
+	if _lerp_t[i] < 0.0:
+		return
+	_lerp_t[i] = _lerp_t[i] + delta / tick_inv  # PackedFloat32Array: write is atomic per slot
+	var t := minf(_lerp_t[i], t_cap)
+
+	# ── Posición ──────────────────────────────────────────────────────────────
+	var pos: Vector3
+	if t <= 1.0:
+		# lerp entre prev_pos y target_pos — sólo lectura de PackedVector3Array, thread-safe
+		pos = _prev_pos[i].lerp(_target_pos[i], t)
+	else:
+		var overshoot := (t - 1.0) * Config.VehicleRendering.TICK_INTERVAL
+		pos = _target_pos[i] + Vector3(_forward_x[i], 0.0, _forward_z[i]) * _velocity[i] * overshoot
+	_out_pos[i] = pos
+
+	# ── Heading ───────────────────────────────────────────────────────────────
+	if t <= 1.0:
+		# lerp_angle manual para no llamar a la función builtin desde worker
+		var from_h := _prev_heading[i]
+		var to_h   := _target_heading[i]
+		var diff   := fmod(to_h - from_h + TAU + PI, TAU) - PI  # normalise a [-π, π]
+		_out_heading[i] = from_h + diff * t
+	else:
+		_out_heading[i] = _target_heading[i]
 
 
 # ── Input ────────────────────────────────────────────────────────────────────
@@ -193,6 +273,16 @@ func _build_multimesh() -> void:
 	_forward_x.resize(max_v);     _forward_x.fill(0.0)
 	_forward_z.resize(max_v);     _forward_z.fill(-1.0)   # Default facing North
 	_lerp_t.resize(max_v);        _lerp_t.fill(-1.0)      # -1 = not initialised
+
+	# Parallel-update output arrays
+	_out_pos.resize(max_v)
+	_out_heading.resize(max_v)
+
+	# Raw MultiMesh buffers: 16 floats per instance (12 transform + 4 color)
+	_body_buffer.resize(max_v * 16)
+	_body_buffer.fill(0.0)
+	_roof_buffer.resize(max_v * 16)
+	_roof_buffer.fill(0.0)
 
 	_body_mmi = _make_mmi(
 		"VehicleBodyMesh",
@@ -327,15 +417,12 @@ func _copy_slot_state(src: int, dst: int) -> void:
 	_forward_x[dst]     = _forward_x[src]
 	_forward_z[dst]     = _forward_z[src]
 	_lerp_t[dst]        = _lerp_t[src]
-	# Mirror MultiMesh instance data so the frame before _process() runs looks correct
-	_body_mmi.multimesh.set_instance_transform(dst,
-		_body_mmi.multimesh.get_instance_transform(src))
-	_body_mmi.multimesh.set_instance_color(dst,
-		_body_mmi.multimesh.get_instance_color(src))
-	_roof_mmi.multimesh.set_instance_transform(dst,
-		_roof_mmi.multimesh.get_instance_transform(src))
-	_roof_mmi.multimesh.set_instance_color(dst,
-		_roof_mmi.multimesh.get_instance_color(src))
+	# Copiar los 16 floats del buffer (12 transform + 4 color) desde src a dst
+	var src_off := src * 16
+	var dst_off := dst * 16
+	for k in range(16):
+		_body_buffer[dst_off + k] = _body_buffer[src_off + k]
+		_roof_buffer[dst_off + k] = _roof_buffer[src_off + k]
 
 
 ## Reset a slot's state to its uninitialised defaults.
@@ -349,6 +436,8 @@ func _on_ws_connected() -> void:
 	_id_to_slot.clear()
 	_slot_to_id.fill("")
 	_lerp_t.fill(-1.0)
+	_body_buffer.fill(0.0)
+	_roof_buffer.fill(0.0)
 	_set_visible_count(0)
 	_log_info("Reset on WebSocket connect")
 
@@ -413,10 +502,15 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 	_forward_x[slot]       = sin(new_heading)   # East component
 	_forward_z[slot]       = -cos(new_heading)  # South component (-cos because +Z = South)
 
-	# Status colour is applied immediately (no visual interpolation needed)
+	# Status colour: escribe directamente en el buffer (floats 12-15 de cada slot)
+	# en lugar de llamar a set_instance_color, para que multimesh.buffer = ...
+	# en _process() suba el color junto con el transform en una sola operación.
 	var color := _get_status_color(status)
-	_body_mmi.multimesh.set_instance_color(slot, color)
-	_roof_mmi.multimesh.set_instance_color(slot, color)
+	var off   := slot * 16
+	_body_buffer[off + 12] = color.r;  _body_buffer[off + 13] = color.g
+	_body_buffer[off + 14] = color.b;  _body_buffer[off + 15] = color.a
+	_roof_buffer[off + 12] = color.r;  _roof_buffer[off + 13] = color.g
+	_roof_buffer[off + 14] = color.b;  _roof_buffer[off + 15] = color.a
 
 
 func _get_status_color(status: String) -> Color:
