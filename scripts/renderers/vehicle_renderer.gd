@@ -179,18 +179,22 @@ func _process(delta: float) -> void:
 		var heading := _out_heading[i]
 		var c       := cos(heading)
 		var s       := sin(heading)
-		# Basis(Vector3.UP, h): basis.x=(c,0,-s), basis.y=(0,1,0), basis.z=(s,0,c)
-		# Buffer row-major [bx[k], by[k], bz[k], origin[k]] para k=0,1,2:
-		#   Row 0: [ c,  0,  s, pos.x ]   Row 1: [ 0, 1, 0, pos.y ]   Row 2: [-s, 0, c, pos.z ]
+		# R_y(+h): basis.x=(c,0,-s), basis.y=(0,1,0), basis.z=(s,0,c)
+		# Buffer [bx.x, bx.y, bx.z, origin.x, by.x...], i.e. basis columns then origin:
+		#   Col 0 (basis.x): [ c,  0, -s, pos.x ]
+		#   Col 1 (basis.y): [ 0,  1,  0, pos.y ]
+		#   Col 2 (basis.z): [ s,  0,  c, pos.z ]
+		# This maps local -Z (nose) to world direction (sin(h), 0, cos(h))·(-1) = (-sin(h), 0, -cos(h))
+		# wait — local -Z through R_y(+h): (-(-s), 0, -(c)) = (s, 0, -c)... at h=90°: (1,0,0) = East ✓
 		var off := i * 16
 		# body
-		_body_buffer[off +  0] =  c;  _body_buffer[off +  1] = 0.0; _body_buffer[off +  2] =  s; _body_buffer[off +  3] = pos.x
+		_body_buffer[off +  0] =  c;  _body_buffer[off +  1] = 0.0; _body_buffer[off +  2] = -s; _body_buffer[off +  3] = pos.x
 		_body_buffer[off +  4] = 0.0; _body_buffer[off +  5] = 1.0; _body_buffer[off +  6] = 0.0; _body_buffer[off +  7] = pos.y + body_y
-		_body_buffer[off +  8] = -s;  _body_buffer[off +  9] = 0.0; _body_buffer[off + 10] =  c;  _body_buffer[off + 11] = pos.z
+		_body_buffer[off +  8] =  s;  _body_buffer[off +  9] = 0.0; _body_buffer[off + 10] =  c;  _body_buffer[off + 11] = pos.z
 		# roof
-		_roof_buffer[off +  0] =  c;  _roof_buffer[off +  1] = 0.0; _roof_buffer[off +  2] =  s; _roof_buffer[off +  3] = pos.x
+		_roof_buffer[off +  0] =  c;  _roof_buffer[off +  1] = 0.0; _roof_buffer[off +  2] = -s; _roof_buffer[off +  3] = pos.x
 		_roof_buffer[off +  4] = 0.0; _roof_buffer[off +  5] = 1.0; _roof_buffer[off +  6] = 0.0; _roof_buffer[off +  7] = pos.y + roof_y
-		_roof_buffer[off +  8] = -s;  _roof_buffer[off +  9] = 0.0; _roof_buffer[off + 10] =  c;  _roof_buffer[off + 11] = pos.z
+		_roof_buffer[off +  8] =  s;  _roof_buffer[off +  9] = 0.0; _roof_buffer[off + 10] =  c;  _roof_buffer[off + 11] = pos.z
 
 	# Una sola subida de datos a la GPU por mesh (en lugar de N llamadas individuales)
 	_body_mmi.multimesh.buffer = _body_buffer
@@ -461,9 +465,14 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 	var speed      : float  = state.get("v",      0.0)
 	var status     : String = state.get("status", "idle")
 
+	var new_heading := deg_to_rad(heading_deg)
 	var new_pos     := _converter.gps_to_godot(lon, lat)
 	new_pos.y        = Config.VehicleRendering.CAR_ELEVATION
-	var new_heading := deg_to_rad(heading_deg)
+	# Lateral offset toward the vehicle's right side (right-hand traffic) so that
+	# opposite-direction lanes don't overlap on shared OSM centerlines.
+	var lane_off := Config.VehicleRendering.LANE_LATERAL_OFFSET_M
+	new_pos.x += cos(new_heading) * lane_off
+	new_pos.z += sin(new_heading) * lane_off
 
 	if _lerp_t[slot] < 0.0:
 		# ── First update for this slot: snap directly to position ──────────
@@ -515,10 +524,12 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 
 func _get_status_color(status: String) -> Color:
 	match status:
-		"moving":  return Config.VehicleColors.MOVING
-		"stopped": return Config.VehicleColors.STOPPED
-		"waiting": return Config.VehicleColors.WAITING
-		_:         return Config.VehicleColors.IDLE
+		"moving":    return Config.VehicleColors.MOVING
+		"stopped":   return Config.VehicleColors.STOPPED
+		"waiting":   return Config.VehicleColors.WAITING
+		"collision": return Config.VehicleColors.COLLISION
+		"paused":    return Config.VehicleColors.PAUSED
+		_:           return Config.VehicleColors.IDLE
 
 
 # ── Ray picking ──────────────────────────────────────────────────────────────

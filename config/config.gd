@@ -69,6 +69,10 @@ class SimEndpoints:
 	const CONFIG: String = "/simulation/config"
 	const VEHICLES: String = "/simulation/vehicles"
 	const VEHICLES_SPAWN: String = "/simulation/vehicles/spawn"
+	const TRAFFIC_LIGHTS: String = "/simulation/traffic-lights"
+	const TL_ALL_GREEN: String = "/simulation/traffic-lights/all-green"
+	const TL_ALL_RED: String = "/simulation/traffic-lights/all-red"
+	const TL_NORMAL: String = "/simulation/traffic-lights/normal"
 
 
 ## WebSocket message type constants
@@ -83,42 +87,45 @@ class SimMessageTypes:
 	const ANALYTICS_UPDATE: String = "analytics_update"
 
 
-## Road type colors for visualization (matching OSM road hierarchy)
+## Road type colors — light theme, high contrast over near-white ground
+## (readable in projectors with strong ambient light)
 class RoadColors:
-	const MOTORWAY: Color = Color(0.0, 0.2, 0.4)       # Dark Blue #003366
-	const MOTORWAY_LINK: Color = Color(0.0, 0.3, 0.5)  # Slightly lighter
-	const TRUNK: Color = Color(0.0, 0.4, 0.6)          # Medium Blue
-	const TRUNK_LINK: Color = Color(0.0, 0.5, 0.7)
-	const PRIMARY: Color = Color(1.0, 0.8, 0.0)        # Yellow #FFCC00
-	const PRIMARY_LINK: Color = Color(1.0, 0.85, 0.2)
-	const SECONDARY: Color = Color(1.0, 0.53, 0.0)     # Orange #FF8800
-	const SECONDARY_LINK: Color = Color(1.0, 0.6, 0.2)
-	const TERTIARY: Color = Color(1.0, 0.67, 0.27)     # Light Orange #FFAA44
-	const TERTIARY_LINK: Color = Color(1.0, 0.75, 0.4)
-	const RESIDENTIAL: Color = Color(1.0, 1.0, 1.0)    # White #FFFFFF
-	const SERVICE: Color = Color(0.8, 0.8, 0.8)        # Light Gray #CCCCCC
-	const UNCLASSIFIED: Color = Color(0.7, 0.7, 0.7)   # Gray
-	const LIVING_STREET: Color = Color(0.9, 0.9, 0.9)  # Very light gray
-	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)        # Default gray
+	const MOTORWAY: Color       = Color(0.10, 0.22, 0.48)   # Deep Blue
+	const MOTORWAY_LINK: Color  = Color(0.15, 0.30, 0.55)
+	const TRUNK: Color          = Color(0.18, 0.38, 0.62)
+	const TRUNK_LINK: Color     = Color(0.22, 0.45, 0.68)
+	const PRIMARY: Color        = Color(0.85, 0.55, 0.00)   # Strong Orange
+	const PRIMARY_LINK: Color   = Color(0.88, 0.62, 0.12)
+	const SECONDARY: Color      = Color(0.82, 0.30, 0.05)   # Red-orange
+	const SECONDARY_LINK: Color = Color(0.85, 0.40, 0.15)
+	const TERTIARY: Color       = Color(0.70, 0.45, 0.15)
+	const TERTIARY_LINK: Color  = Color(0.72, 0.52, 0.22)
+	const RESIDENTIAL: Color    = Color(0.30, 0.32, 0.36)   # Dark gray — not white, to stand out
+	const SERVICE: Color        = Color(0.45, 0.47, 0.50)
+	const UNCLASSIFIED: Color   = Color(0.40, 0.42, 0.46)
+	const LIVING_STREET: Color  = Color(0.55, 0.55, 0.58)
+	const UNKNOWN: Color        = Color(0.35, 0.35, 0.38)
 
 
-## Node type colors for visualization
+## Node type colors — saturated and dark so they pop on a light ground
 class NodeColors:
-	const INTERSECTION: Color = Color(0.5, 0.5, 0.5)      # Gray #808080
-	const TRAFFIC_LIGHT: Color = Color(1.0, 0.0, 0.0)     # Red #FF0000
-	const ROUNDABOUT: Color = Color(0.0, 0.5, 1.0)        # Blue #0080FF
-	const DEAD_END: Color = Color(0.25, 0.25, 0.25)       # Dark Gray #404040
-	const ENTRY_POINT: Color = Color(0.0, 1.0, 0.0)       # Green #00FF00
-	const EXIT_POINT: Color = Color(1.0, 0.65, 0.0)       # Orange #FFA500
-	const UNKNOWN: Color = Color(0.5, 0.5, 0.5)           # Gray (default)
+	const INTERSECTION: Color = Color(0.22, 0.25, 0.30)   # Near-black
+	const TRAFFIC_LIGHT: Color= Color(0.85, 0.08, 0.10)   # Strong red
+	const ROUNDABOUT: Color   = Color(0.05, 0.35, 0.70)   # Deep blue
+	const DEAD_END: Color     = Color(0.15, 0.15, 0.18)
+	const ENTRY_POINT: Color  = Color(0.05, 0.55, 0.20)   # Deep green
+	const EXIT_POINT: Color   = Color(0.85, 0.40, 0.05)   # Deep orange
+	const UNKNOWN: Color      = Color(0.40, 0.42, 0.46)
 
 
-## Vehicle status colors for simulation visualization
+## Vehicle status colors — high-saturation so cars read at a glance on white
 class VehicleColors:
-	const MOVING: Color = Color(0.2, 0.4, 1.0)    # Blue
-	const STOPPED: Color = Color(1.0, 0.2, 0.2)   # Red
-	const WAITING: Color = Color(1.0, 0.8, 0.0)   # Yellow/amber
-	const IDLE: Color = Color(1.0, 0.8, 0.0)      # Yellow/amber (same as WAITING)
+	const MOVING: Color    = Color(0.05, 0.35, 0.85)   # Strong blue
+	const STOPPED: Color   = Color(0.82, 0.08, 0.12)   # Strong red
+	const WAITING: Color   = Color(0.95, 0.70, 0.00)   # Saturated amber
+	const IDLE: Color      = Color(0.95, 0.70, 0.00)
+	const COLLISION: Color = Color(0.95, 0.30, 0.00)
+	const PAUSED: Color    = Color(0.30, 0.35, 0.60)
 
 
 ## Vehicle rendering configuration
@@ -136,6 +143,10 @@ class VehicleRendering:
 	const ROOF_Y_OFFSET: float = 1.85  # Roof centre above road  (= BODY_HEIGHT + ROOF_HEIGHT / 2)
 	## Road clearance (raises vehicles slightly to avoid Z-fighting)
 	const CAR_ELEVATION: float = 0.2
+	## Lateral offset from edge centerline toward the vehicle's right side (metres).
+	## OSM two-way streets share a single centerline per direction — without this,
+	## vehicles on opposite-direction edges overlap / appear to crash head-on.
+	const LANE_LATERAL_OFFSET_M: float = 1.8
 	const MATERIAL_ROUGHNESS: float = 0.4
 	const MATERIAL_METALLIC: float = 0.2
 	const RAYCAST_MAX_DISTANCE: float = 10000.0
@@ -159,10 +170,20 @@ class NodeRendering:
 	const SELECTION_HIGHLIGHT_SCALE: float = 1.3  # Scale when selected
 	const HOVER_HIGHLIGHT_SCALE: float = 1.15   # Scale when hovered
 	const RAYCAST_MAX_DISTANCE: float = 10000.0 # Max raycast distance for node picking
-	const MATERIAL_ROUGHNESS: float = 0.7       # Material roughness value
-	const MATERIAL_METALLIC: float = 0.1        # Material metallic value
-	const METALLIC_SPECULAR: float = 0.3        # Material metallic specular value
-	const EMISSION_ENERGY: float = 0.1          # Emission energy multiplier
+	const MATERIAL_ROUGHNESS: float = 0.6       # Slightly less matte for a light theme
+	const MATERIAL_METALLIC: float = 0.1
+	const METALLIC_SPECULAR: float = 0.3
+	const EMISSION_ENERGY: float = 0.15         # Subtle emission — dark saturated node colors already pop on light ground
+
+	## Traffic light rendering — se dibuja UNA esfera por arista entrante sobre
+	## la línea de stop (no en el centro del nodo). El tamaño se auto-escala
+	## igual que las intersecciones, pero reducido, para distinguir los brazos
+	## sin que una sola esfera tape el cruce entero.
+	const TL_RADIUS_FRACTION: float = 0.35       # fracción del radio de nodo regular
+	const TL_OFFSET_FRACTION: float = 1.5        # offset stop-line = TL_OFFSET_FRACTION · radio regular
+	const TL_HEIGHT_FRACTION: float = 0.5        # altura vertical del foco = TL_HEIGHT_FRACTION · radio regular
+	const TL_SPHERE_SEGMENTS: int = 12
+	const TL_SPHERE_RINGS: int = 6
 
 
 ## Edge/Road rendering configuration
@@ -194,7 +215,7 @@ class EdgeRendering:
 	const ARROW_SPACING: float = 50.0     # Meters between arrows
 	const ARROW_SIZE: float = 4.0         # Arrow size in meters
 	const ARROW_HEIGHT: float = 0.3       # Arrow height above road
-	const ARROW_COLOR: Color = Color(1.0, 1.0, 1.0, 0.9)  # Arrow color (white, semi-transparent)
+	const ARROW_COLOR: Color = Color(0.10, 0.10, 0.10, 0.85)  # Dark arrows, readable over light/mid roads
 
 	## Selection/highlight
 	const SELECTION_WIDTH_MULTIPLIER: float = 1.2
@@ -241,10 +262,10 @@ class Camera:
 
 ## UI configuration
 class UI:
-	## Debug panel
+	## Layout / spacing
 	const PANEL_MARGIN: int = 10               # Margin from screen edge
 	const PANEL_MIN_WIDTH: int = 250           # Minimum panel width
-	const PANEL_OPACITY: float = 0.85          # Background opacity (0-1)
+	const PANEL_OPACITY: float = 0.96          # High opacity so text stays legible over 3D
 	const PANEL_CORNER_RADIUS: int = 8         # Corner radius for rounded edges
 	const PANEL_CONTENT_MARGIN: int = 12       # Content margin inside panel
 	const PANEL_VERTICAL_MARGIN: int = 8       # Vertical margin inside panel
@@ -252,23 +273,51 @@ class UI:
 	const BUTTON_HEIGHT: int = 28              # Button minimum height
 	const BUTTON_CORNER_RADIUS: int = 4        # Button corner radius
 
-	## Colors
-	const BACKGROUND_COLOR: Color = Color(0.1, 0.1, 0.12, 0.85)  # Dark semi-transparent
-	const TEXT_COLOR: Color = Color(0.9, 0.9, 0.9)               # Light gray text
-	const TEXT_SECONDARY_COLOR: Color = Color(0.7, 0.7, 0.7)     # Secondary text
-	const TEXT_MUTED_COLOR: Color = Color(0.8, 0.8, 0.8)         # Muted text
-	const ACCENT_COLOR: Color = Color(0.3, 0.6, 1.0)             # Blue accent
-	const SUCCESS_COLOR: Color = Color(0.3, 0.8, 0.4)            # Green
-	const WARNING_COLOR: Color = Color(1.0, 0.7, 0.2)            # Yellow/Orange
-	const ERROR_COLOR: Color = Color(1.0, 0.3, 0.3)              # Red
-	const SEPARATOR_COLOR: Color = Color(0.3, 0.3, 0.35)         # Separator line
-	const BUTTON_NORMAL_COLOR: Color = Color(0.2, 0.2, 0.25)     # Button normal
-	const BUTTON_HOVER_COLOR: Color = Color(0.25, 0.25, 0.3)     # Button hover
-	const BUTTON_PRESSED_COLOR: Color = Color(0.15, 0.15, 0.2)   # Button pressed
+	## Colors — light theme optimised for projector visibility
+	## Panels
+	const BACKGROUND_COLOR: Color   = Color(0.98, 0.98, 0.98, 0.96)  # Near-white
+	const PANEL_BORDER_COLOR: Color = Color(0.78, 0.82, 0.88, 1.0)   # Soft blue-gray border
+	const PANEL_SHADOW_COLOR: Color = Color(0.0, 0.0, 0.0, 0.08)     # Very subtle shadow
+
+	## Text
+	const TEXT_COLOR: Color           = Color(0.10, 0.12, 0.16)      # Near-black
+	const TEXT_SECONDARY_COLOR: Color = Color(0.35, 0.40, 0.48)      # Mid gray
+	const TEXT_MUTED_COLOR: Color     = Color(0.55, 0.58, 0.62)
+
+	## Accent (corporate blue — strong contrast on white)
+	const ACCENT_COLOR: Color   = Color(0.09, 0.42, 0.78)            # #1769C7
+	const ACCENT_HOVER: Color   = Color(0.12, 0.50, 0.90)
+	const ACCENT_PRESSED: Color = Color(0.06, 0.32, 0.60)
+
+	## Status / feedback
+	const SUCCESS_COLOR: Color = Color(0.10, 0.55, 0.25)             # Deep green
+	const WARNING_COLOR: Color = Color(0.88, 0.55, 0.05)             # Deep amber
+	const ERROR_COLOR: Color   = Color(0.82, 0.10, 0.15)             # Deep red
+
+	## Neutral widgets
+	const SEPARATOR_COLOR: Color       = Color(0.82, 0.84, 0.88)
+	const BUTTON_NORMAL_COLOR: Color   = Color(0.93, 0.94, 0.96)
+	const BUTTON_HOVER_COLOR: Color    = Color(0.86, 0.89, 0.94)
+	const BUTTON_PRESSED_COLOR: Color  = Color(0.78, 0.82, 0.88)
+	const BUTTON_DISABLED_COLOR: Color = Color(0.94, 0.94, 0.94)
 
 	## FPS counter
 	const FPS_UPDATE_INTERVAL: float = 0.5     # Seconds between FPS updates
 	const FPS_SAMPLE_COUNT: int = 30           # Number of frames to average
+
+
+## Physics conversion constants
+class Physics:
+	const MS_TO_KMH: float = 3.6
+	const KMH_TO_MS: float = 0.2778
+
+
+## Traffic light phase colors (used by NodeRenderer and GameHUD)
+class TLColors:
+	const GREEN:  Color = Color(0.0, 0.85, 0.0)
+	const YELLOW: Color = Color(1.0, 0.85, 0.0)
+	const RED:    Color = Color(0.9, 0.1,  0.1)
+	const UNKNOWN:Color = Color(0.5, 0.5,  0.5)
 
 
 ## Coordinate conversion constants

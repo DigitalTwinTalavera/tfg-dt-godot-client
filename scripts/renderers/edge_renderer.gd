@@ -524,6 +524,11 @@ func set_roads_visible(visible_flag: bool) -> void:
 	_arrow_mesh_instance.visible = visible_flag
 
 
+## Toggle only the one-way direction arrows
+func set_arrows_visible(visible_flag: bool) -> void:
+	_arrow_mesh_instance.visible = visible_flag
+
+
 ## Check if roads are visible
 func are_roads_visible() -> bool:
 	return _road_mesh_instance.visible

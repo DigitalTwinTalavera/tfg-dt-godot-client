@@ -29,20 +29,27 @@ var _http: HTTPClient2
 
 
 # ── UI nodes ─────────────────────────────────────────────────────────────
-var _state_dot  : ColorRect
-var _state_label: Label
-var _time_label : Label
-var _start_btn  : Button
-var _stop_btn   : Button
-var _pause_btn  : Button   # doubles as Resume
-var _spawn_count: SpinBox
-var _spawn_btn  : Button
-var _stats_label: Label
+var _panel        : PanelContainer
+var _body         : VBoxContainer   # collapsible body content
+var _state_dot    : ColorRect
+var _state_label  : Label
+var _time_label   : Label
+var _start_btn    : Button
+var _stop_btn     : Button
+var _pause_btn    : Button          # doubles as Resume
+var _spawn_count  : SpinBox
+var _spawn_btn    : Button
+var _stats_label  : Label
+var _chrome_min   : Button          # minimize (collapse body)
+var _chrome_max   : Button          # maximize  (restore body)
+var _chrome_close : Button          # close (hide panel)
+var _reopener     : Button          # shown when panel is closed
 
 
 # ── Runtime state ─────────────────────────────────────────────────────────
-var _request_in_flight: bool  = false
+var _request_in_flight: bool = false
 var _refresh_timer    : float = 0.0
+var _is_minimized     : bool = false
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -79,42 +86,69 @@ func _process(delta: float) -> void:
 # ── Build UI ─────────────────────────────────────────────────────────────
 
 func _build_ui() -> void:
-	var panel := PanelContainer.new()
-	# Anchor to top-right corner so it never overlaps the left-side stats panel
-	panel.anchor_left   = 1.0
-	panel.anchor_right  = 1.0
-	panel.anchor_top    = 0.0
-	panel.anchor_bottom = 0.0
-	panel.offset_left   = -(PANEL_WIDTH + 8.0)
-	panel.offset_right  = -8.0
-	panel.offset_top    = 8.0
-	panel.custom_minimum_size = Vector2(PANEL_WIDTH, 0.0)
-	add_child(panel)
+	# ── Main panel ────────────────────────────────────────────────────────
+	_panel = PanelContainer.new()
+	_panel.anchor_left   = 1.0
+	_panel.anchor_right  = 1.0
+	_panel.anchor_top    = 0.0
+	_panel.anchor_bottom = 0.0
+	_panel.offset_left   = -(PANEL_WIDTH + 8.0)
+	_panel.offset_right  = -8.0
+	_panel.offset_top    = 8.0
+	_panel.custom_minimum_size = Vector2(PANEL_WIDTH, 0.0)
+	add_child(_panel)
 
 	var outer := MarginContainer.new()
 	outer.add_theme_constant_override("margin_left",   10)
 	outer.add_theme_constant_override("margin_right",  10)
-	outer.add_theme_constant_override("margin_top",     8)
+	outer.add_theme_constant_override("margin_top",     6)
 	outer.add_theme_constant_override("margin_bottom", 10)
-	panel.add_child(outer)
+	_panel.add_child(outer)
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 5)
 	outer.add_child(vbox)
 
-	# ── Title ──────────────────────────────────────────────────────────────
+	# ── Title bar with chrome buttons ─────────────────────────────────────
+	var title_bar := HBoxContainer.new()
+	title_bar.add_theme_constant_override("separation", 2)
+	vbox.add_child(title_bar)
+
 	var title := Label.new()
 	title.text = "Simulation Control"
-	title.add_theme_color_override("font_color",   Config.UI.TEXT_COLOR)
+	title.add_theme_color_override("font_color",    Config.UI.TEXT_COLOR)
 	title.add_theme_font_size_override("font_size", 13)
-	vbox.add_child(title)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_bar.add_child(title)
+
+	_chrome_min = _make_chrome_btn("─")
+	_chrome_min.tooltip_text = "Minimizar"
+	_chrome_min.pressed.connect(_on_chrome_minimize)
+	title_bar.add_child(_chrome_min)
+
+	_chrome_max = _make_chrome_btn("□")
+	_chrome_max.tooltip_text = "Restaurar"
+	_chrome_max.disabled = true
+	_chrome_max.pressed.connect(_on_chrome_maximize)
+	title_bar.add_child(_chrome_max)
+
+	_chrome_close = _make_chrome_btn("×")
+	_chrome_close.tooltip_text = "Cerrar"
+	_chrome_close.add_theme_color_override("font_color", Config.UI.ERROR_COLOR)
+	_chrome_close.pressed.connect(_on_chrome_close)
+	title_bar.add_child(_chrome_close)
 
 	vbox.add_child(HSeparator.new())
+
+	# ── Collapsible body ──────────────────────────────────────────────────
+	_body = VBoxContainer.new()
+	_body.add_theme_constant_override("separation", 5)
+	vbox.add_child(_body)
 
 	# ── State indicator ────────────────────────────────────────────────────
 	var state_row := HBoxContainer.new()
 	state_row.add_theme_constant_override("separation", 6)
-	vbox.add_child(state_row)
+	_body.add_child(state_row)
 
 	var dot_wrap := MarginContainer.new()
 	dot_wrap.add_theme_constant_override("margin_top", 3)
@@ -135,14 +169,14 @@ func _build_ui() -> void:
 	_time_label.text = "Time: --:--"
 	_time_label.add_theme_color_override("font_color",   Config.UI.TEXT_SECONDARY_COLOR)
 	_time_label.add_theme_font_size_override("font_size", 11)
-	vbox.add_child(_time_label)
+	_body.add_child(_time_label)
 
-	vbox.add_child(HSeparator.new())
+	_body.add_child(HSeparator.new())
 
 	# ── Control buttons ────────────────────────────────────────────────────
 	var row1 := HBoxContainer.new()
 	row1.add_theme_constant_override("separation", 4)
-	vbox.add_child(row1)
+	_body.add_child(row1)
 
 	_start_btn = _make_btn("Start", Config.UI.SUCCESS_COLOR)
 	_start_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -157,20 +191,20 @@ func _build_ui() -> void:
 	_pause_btn = _make_btn("Pause", Config.UI.WARNING_COLOR)
 	_pause_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_pause_btn.pressed.connect(_on_pause_pressed)
-	vbox.add_child(_pause_btn)
+	_body.add_child(_pause_btn)
 
-	vbox.add_child(HSeparator.new())
+	_body.add_child(HSeparator.new())
 
 	# ── Spawn section ──────────────────────────────────────────────────────
 	var spawn_hdr := Label.new()
 	spawn_hdr.text = "Manual Spawn"
 	spawn_hdr.add_theme_color_override("font_color",   Config.UI.TEXT_SECONDARY_COLOR)
 	spawn_hdr.add_theme_font_size_override("font_size", 11)
-	vbox.add_child(spawn_hdr)
+	_body.add_child(spawn_hdr)
 
 	var spawn_row := HBoxContainer.new()
 	spawn_row.add_theme_constant_override("separation", 4)
-	vbox.add_child(spawn_row)
+	_body.add_child(spawn_row)
 
 	var count_lbl := Label.new()
 	count_lbl.text = "Count:"
@@ -179,34 +213,61 @@ func _build_ui() -> void:
 	spawn_row.add_child(count_lbl)
 
 	_spawn_count = SpinBox.new()
-	_spawn_count.min_value                = 1
-	_spawn_count.max_value                = 10000
-	_spawn_count.value                    = 100
-	_spawn_count.step                     = 1
-	_spawn_count.size_flags_horizontal    = Control.SIZE_EXPAND_FILL
+	_spawn_count.min_value             = 1
+	_spawn_count.max_value             = 10000
+	_spawn_count.value                 = 100
+	_spawn_count.step                  = 1
+	_spawn_count.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spawn_row.add_child(_spawn_count)
 
 	_spawn_btn = _make_btn("Spawn", Config.UI.ACCENT_COLOR)
 	_spawn_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_spawn_btn.pressed.connect(_on_spawn_pressed)
-	vbox.add_child(_spawn_btn)
+	_body.add_child(_spawn_btn)
 
-	vbox.add_child(HSeparator.new())
+	_body.add_child(HSeparator.new())
 
 	# ── Stats section ──────────────────────────────────────────────────────
 	var stats_hdr := Label.new()
 	stats_hdr.text = "Stats"
 	stats_hdr.add_theme_color_override("font_color",   Config.UI.TEXT_SECONDARY_COLOR)
 	stats_hdr.add_theme_font_size_override("font_size", 11)
-	vbox.add_child(stats_hdr)
+	_body.add_child(stats_hdr)
 
 	_stats_label = Label.new()
-	_stats_label.text       = "—"
+	_stats_label.text          = "—"
 	_stats_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_stats_label.custom_minimum_size = Vector2(PANEL_WIDTH - 20.0, 0.0)
 	_stats_label.add_theme_color_override("font_color",   Config.UI.TEXT_SECONDARY_COLOR)
 	_stats_label.add_theme_font_size_override("font_size", 11)
-	vbox.add_child(_stats_label)
+	_body.add_child(_stats_label)
+
+	# ── Reopener button (shown when panel is closed) ───────────────────────
+	_reopener = Button.new()
+	_reopener.text         = "⚙"
+	_reopener.tooltip_text = "Abrir panel de simulación"
+	_reopener.anchor_left   = 1.0
+	_reopener.anchor_right  = 1.0
+	_reopener.anchor_top    = 0.0
+	_reopener.anchor_bottom = 0.0
+	_reopener.offset_left   = -36.0
+	_reopener.offset_right  = -8.0
+	_reopener.offset_top    = 8.0
+	_reopener.offset_bottom = 36.0
+	_reopener.visible = false
+	_reopener.pressed.connect(_on_chrome_reopen)
+	add_child(_reopener)
+
+
+## Create a small flat button for the window chrome.
+func _make_chrome_btn(icon: String) -> Button:
+	var btn := Button.new()
+	btn.text = icon
+	btn.flat = true
+	btn.custom_minimum_size = Vector2(22, 20)
+	btn.add_theme_font_size_override("font_size", 12)
+	btn.add_theme_color_override("font_color", Config.UI.TEXT_SECONDARY_COLOR)
+	return btn
 
 
 ## Helper: create a flat Button with a coloured label.
@@ -216,6 +277,38 @@ func _make_btn(label: String, font_color: Color) -> Button:
 	btn.custom_minimum_size = Vector2(0, 26)
 	btn.add_theme_color_override("font_color", font_color)
 	return btn
+
+
+# ── Chrome button handlers ────────────────────────────────────────────────
+
+func _on_chrome_minimize() -> void:
+	_is_minimized = true
+	_body.visible = false
+	_chrome_min.disabled = true
+	_chrome_max.disabled = false
+
+
+func _on_chrome_maximize() -> void:
+	_is_minimized = false
+	_body.visible = true
+	_chrome_min.disabled = false
+	_chrome_max.disabled = true
+
+
+func _on_chrome_close() -> void:
+	_panel.visible  = false
+	_reopener.visible = true
+
+
+func _on_chrome_reopen() -> void:
+	_panel.visible  = true
+	_reopener.visible = false
+	# Always restore body when reopening
+	if _is_minimized:
+		_is_minimized = false
+		_body.visible = true
+		_chrome_min.disabled = false
+		_chrome_max.disabled = true
 
 
 # ── Signal wiring ─────────────────────────────────────────────────────────
@@ -371,10 +464,10 @@ func _sim_command(endpoint: String) -> void:
 
 ## Disable / enable all interactive buttons at once.
 func _set_all_disabled(disabled: bool) -> void:
-	_start_btn.disabled  = disabled
-	_stop_btn.disabled   = disabled
-	_pause_btn.disabled  = disabled
-	_spawn_btn.disabled  = disabled
+	_start_btn.disabled = disabled
+	_stop_btn.disabled  = disabled
+	_pause_btn.disabled = disabled
+	_spawn_btn.disabled = disabled
 
 
 # ── Logging ───────────────────────────────────────────────────────────────
