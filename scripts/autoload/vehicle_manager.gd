@@ -11,6 +11,8 @@
 ##   status    - String ("idle" | "moving" | "finished")
 ##   edge_idx  - int current edge index in route
 ##   progress  - float 0.0..1.0 progress along current edge
+##   lane      - int lane occupied (0 = rightmost)
+##   vtype     - String ("car" | "moto" | "truck")
 extends Node
 
 

@@ -82,14 +82,11 @@ func _setup_sim_components() -> void:
 	_hud.reset_camera_requested.connect(_on_reset_camera)
 	_hud.reload_map_requested.connect(_on_reload_map)
 	_hud.camera_speed_changed.connect(_on_camera_speed_changed)
-	_hud.camera_smooth_changed.connect(_on_camera_smooth_changed)
 
 
 func _connect_signals() -> void:
 	node_renderer.render_complete.connect(_on_node_render_complete)
 	node_renderer.node_selected.connect(_on_node_selected)
-	node_renderer.node_hovered.connect(_on_node_hovered)
-	node_renderer.node_hover_ended.connect(_on_node_hover_ended)
 
 	# Fase por arista → pinta cada brazo del cruce con su fase independiente.
 	# (No conectamos la señal legada `traffic_light_updated` al renderer: sobre-
@@ -159,10 +156,6 @@ func _on_reload_map() -> void:
 
 func _on_camera_speed_changed(speed: float) -> void:
 	_camera_speed = speed
-
-
-func _on_camera_smooth_changed(_enabled: bool) -> void:
-	pass
 
 
 func _input(event: InputEvent) -> void:
@@ -325,11 +318,3 @@ func _on_edge_render_complete(edge_count: int) -> void:
 func _on_node_selected(node: NodeData) -> void:
 	if Config.should_log(Config.LogLevel.DEBUG):
 		print("[TestNetworkRenderer] Selected node: %d (%s)" % [node.id, node.get_type_string()])
-
-
-func _on_node_hovered(_node: NodeData) -> void:
-	pass
-
-
-func _on_node_hover_ended() -> void:
-	pass

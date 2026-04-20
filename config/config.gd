@@ -25,8 +25,6 @@ static var ws_url: String:
 
 ## HTTP client configuration
 const HTTP_TIMEOUT_SECONDS: float = 10.0
-const HTTP_MAX_RETRIES: int = 3
-const HTTP_RETRY_DELAY_SECONDS: float = 1.0
 
 
 ## API endpoints
@@ -83,8 +81,6 @@ class SimMessageTypes:
 	const VEHICLE_FINISHED: String = "vehicle_finished"
 	const VEHICLES_BATCH_SPAWNED: String = "vehicles_batch_spawned"
 	const TRAFFIC_LIGHT: String = "traffic_light"
-	const INCIDENT_CREATED: String = "incident_created"
-	const ANALYTICS_UPDATE: String = "analytics_update"
 
 
 ## Road type colors — light theme, high contrast over near-white ground
@@ -131,7 +127,9 @@ class VehicleColors:
 ## Vehicle rendering configuration
 class VehicleRendering:
 	const MAX_VEHICLES: int = 10000
-	## Car body dimensions in metres (length = front-to-back along local Z)
+	## "Base" mesh dimensions used when generando los BoxMesh de los MultiMesh.
+	## Las dimensiones reales de cada vehículo se aplican mediante escala de la
+	## base por instancia (length_m / BODY_LENGTH, etc.) — ver vehicle_renderer.
 	const BODY_LENGTH: float = 4.0
 	const BODY_HEIGHT: float = 1.5
 	const BODY_WIDTH: float = 2.0
@@ -143,10 +141,10 @@ class VehicleRendering:
 	const ROOF_Y_OFFSET: float = 1.85  # Roof centre above road  (= BODY_HEIGHT + ROOF_HEIGHT / 2)
 	## Road clearance (raises vehicles slightly to avoid Z-fighting)
 	const CAR_ELEVATION: float = 0.2
-	## Lateral offset from edge centerline toward the vehicle's right side (metres).
-	## OSM two-way streets share a single centerline per direction — without this,
-	## vehicles on opposite-direction edges overlap / appear to crash head-on.
-	const LANE_LATERAL_OFFSET_M: float = 1.8
+	## Anchura estándar de un carril (m). Se usa para posicionar lateralmente cada
+	## vehículo según su `lane`: lateral = (lane + 0.5) · LANE_WIDTH_M, proyectado
+	## perpendicular al heading (a la derecha para tráfico de mano derecha).
+	const LANE_WIDTH_M: float = 3.5
 	const MATERIAL_ROUGHNESS: float = 0.4
 	const MATERIAL_METALLIC: float = 0.2
 	const RAYCAST_MAX_DISTANCE: float = 10000.0
@@ -155,6 +153,44 @@ class VehicleRendering:
 	const SNAP_DISTANCE: float = 10.0      # Snap without lerp if error > this (metres)
 	const SNAP_HEADING_DEG: float = 45.0   # Snap without lerp if heading changes > this (degrees)
 	const MAX_DEAD_RECKONING: float = 0.3  # Cap dead-reckoning time (seconds)
+	## Suavizado de velocidad — evita que saltos bruscos de `v` en el tick generen
+	## tirones visibles durante la extrapolación. v_smooth = α·v_nuevo + (1-α)·v_ant.
+	const VELOCITY_EMA_ALPHA: float = 0.4
+	## Límite de velocidad angular de interpolación (rad/s). Evita giros instantáneos
+	## cuando el backend publica un cambio brusco de heading. 180°/s ≈ π.
+	const MAX_YAW_RATE_RAD_S: float = 3.141592653589793
+	## Sombras proyectadas por el cuerpo del vehículo. Desactivable para benchmarks
+	## en escenas con 10k vehículos donde el coste de sombras dinámicas domina.
+	const SHADOWS_ENABLED: bool = true
+	## Ruedas: radio (m) y separación longitudinal/lateral respecto al centro del
+	## vehículo. Con CYL_MESH, el radio define el tamaño aparente de la rueda.
+	const WHEEL_RADIUS: float = 0.33
+	const WHEEL_THICKNESS: float = 0.25      # anchura axial
+	## Aceleración umbral (m/s²) por debajo de la cual se encienden las luces de
+	## freno. Un valor negativo pequeño evita parpadeos ante decelerations leves.
+	const BRAKE_LIGHT_ACCEL_THRESHOLD: float = -0.8
+
+	## Tamaños por tipo de vehículo (m). Cada slot del MultiMesh se escala sobre
+	## BODY_LENGTH/BODY_WIDTH/BODY_HEIGHT para obtener estas dimensiones reales.
+	class VehicleSize:
+		const CAR_LENGTH: float = 4.5
+		const CAR_WIDTH: float = 1.9
+		const CAR_HEIGHT: float = 1.5
+
+		const MOTO_LENGTH: float = 2.1
+		const MOTO_WIDTH: float = 0.8
+		const MOTO_HEIGHT: float = 1.2
+
+		const TRUCK_LENGTH: float = 10.0
+		const TRUCK_WIDTH: float = 2.5
+		const TRUCK_HEIGHT: float = 3.2
+
+	## Modulación de color según vtype aplicada al color base de estado. Permite
+	## distinguir coches/motos/camiones aunque estén en el mismo estado.
+	class VehicleTint:
+		const CAR: Color    = Color(1.00, 1.00, 1.00)
+		const MOTO: Color   = Color(1.15, 1.05, 0.40)   # tono amarillento
+		const TRUCK: Color  = Color(0.65, 0.65, 0.75)   # tono acero
 
 
 ## Node rendering configuration

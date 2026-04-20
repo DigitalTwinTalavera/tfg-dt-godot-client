@@ -40,12 +40,6 @@ signal vehicles_batch_spawned(vehicles: Array)
 ## Fired for traffic light state updates
 signal traffic_light_received(data: Dictionary)
 
-## Fired for incident notifications
-signal incident_received(data: Dictionary)
-
-## Fired for analytics updates
-signal analytics_received(data: Dictionary)
-
 
 ## Connection state machine -----------------------------------------------
 
@@ -239,12 +233,6 @@ func _route_message(msg: Dictionary) -> void:
 
 		Config.SimMessageTypes.TRAFFIC_LIGHT:
 			traffic_light_received.emit(msg)
-
-		Config.SimMessageTypes.INCIDENT_CREATED:
-			incident_received.emit(msg)
-
-		Config.SimMessageTypes.ANALYTICS_UPDATE:
-			analytics_received.emit(msg)
 
 		_:
 			_log_warning("Unknown message type: '%s'" % type)
