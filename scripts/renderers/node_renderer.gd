@@ -330,6 +330,10 @@ func _get_node_color(node_type: NodeData.NodeType) -> Color:
 			return Config.NodeColors.TRAFFIC_LIGHT
 		NodeData.NodeType.ROUNDABOUT:
 			return Config.NodeColors.ROUNDABOUT
+		NodeData.NodeType.STOP_SIGN:
+			return Config.NodeColors.STOP_SIGN
+		NodeData.NodeType.YIELD_SIGN:
+			return Config.NodeColors.YIELD_SIGN
 		NodeData.NodeType.DEAD_END:
 			return Config.NodeColors.DEAD_END
 		NodeData.NodeType.ENTRY_POINT:

@@ -33,6 +33,11 @@ signal vehicle_spawned(vehicle_id: String, data: Dictionary)
 ## Fired when a vehicle completes its route and is removed
 signal vehicle_finished(vehicle_id: String)
 
+## Fired when two vehicles collide. Payload includes both ids and the blocked edge.
+## The collision persists until the operator clears it via
+## POST /simulation/vehicles/{id}/clear-collision.
+signal vehicle_collision(vehicle_id_1: String, vehicle_id_2: String, blocked_edge: Array)
+
 ## Fired when a batch of vehicles is spawned at once (vehicles_batch_spawned WS message).
 ## Contains the raw array of vehicle dicts from the backend.
 signal vehicles_batch_spawned(vehicles: Array)
@@ -233,6 +238,12 @@ func _route_message(msg: Dictionary) -> void:
 
 		Config.SimMessageTypes.TRAFFIC_LIGHT:
 			traffic_light_received.emit(msg)
+
+		Config.SimMessageTypes.VEHICLE_COLLISION:
+			var vid1 := JsonUtils.get_string(msg, "vehicle_id_1", "")
+			var vid2 := JsonUtils.get_string(msg, "vehicle_id_2", "")
+			var edge := JsonUtils.get_array(msg, "blocked_edge", [])
+			vehicle_collision.emit(vid1, vid2, edge)
 
 		_:
 			_log_warning("Unknown message type: '%s'" % type)

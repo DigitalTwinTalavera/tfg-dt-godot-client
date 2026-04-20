@@ -39,7 +39,7 @@ signal camera_smooth_changed(enabled: bool)
 const TOP_BAR_HEIGHT:    float = 30.0
 const TAB_BAR_HEIGHT:    float = 40.0
 const RIGHT_PANEL_WIDTH: float = 260.0
-const TAB_COUNT:         int   = 4
+const TAB_COUNT:         int   = 5
 const RIGHT_ANIM_TIME:   float = 0.2
 
 
@@ -124,6 +124,16 @@ var _map_tab_open:    bool = false
 # TabSettings widgets
 var _cam_speed_slider: HSlider
 var _cam_speed_lbl:    Label
+
+# TabCollisions widgets
+var _coll_summary_lbl: Label
+var _coll_list_vbox:   VBoxContainer
+var _coll_rows:        Dictionary = {}   ## vehicle_id → row Control
+
+# Collision registry (client-side cache). Rebuilt from the /simulation/collisions
+# endpoint after map load, and updated live from MSG_TYPE_VEHICLE_COLLISION.
+## vehicle_id → {partner_id: String, edge: Array[int], sim_time: float}
+var _collisions: Dictionary = {}
 
 # Network stats cache
 var _net_nodes:   int   = 0
@@ -313,6 +323,7 @@ func _build_bottombar() -> void:
 	_tab_panels[1] = _build_tab_tl()
 	_tab_panels[2] = _build_tab_map()
 	_tab_panels[3] = _build_tab_settings()
+	_tab_panels[4] = _build_tab_collisions()
 	for p in _tab_panels:
 		p.visible = false
 		content_stack.add_child(p)
@@ -332,12 +343,13 @@ func _build_bottombar() -> void:
 	hbox.add_theme_constant_override("separation", 2)
 	_tab_bar.add_child(hbox)
 
-	var tab_labels := ["▶  Simulación", "🚦 Semáforos", "🗺 Mapa", "⚙ Ajustes"]
+	var tab_labels := ["▶  Simulación", "🚦 Semáforos", "🗺 Mapa", "⚙ Ajustes", "🚨 Colisiones"]
 	var tab_tooltips := [
 		"Controlar la simulación (iniciar, pausar, detener, generar vehículos)",
 		"Estado y control global de los semáforos",
 		"Capas visibles, estadísticas de la red y recargar el mapa",
 		"Configuración de cámara, depuración e información de la aplicación",
+		"Vehículos colisionados — requieren retirada manual (gemelo digital)",
 	]
 	_tab_btns.resize(TAB_COUNT)
 	for i in range(TAB_COUNT):
@@ -713,6 +725,49 @@ func _build_tab_settings() -> VBoxContainer:
 	return vbox
 
 
+func _build_tab_collisions() -> VBoxContainer:
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 5)
+	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	_coll_summary_lbl = Label.new()
+	_coll_summary_lbl.text = "Colisiones activas: 0"
+	_coll_summary_lbl.add_theme_font_size_override("font_size", 12)
+	_coll_summary_lbl.add_theme_color_override("font_color", Config.UI.TEXT_COLOR)
+	outer.add_child(_coll_summary_lbl)
+
+	var refresh_btn := _make_btn(
+		"🔄 Refrescar",
+		"Consulta el endpoint GET /simulation/collisions para resincronizar la lista",
+	)
+	refresh_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	refresh_btn.pressed.connect(_refresh_collisions)
+	outer.add_child(refresh_btn)
+
+	outer.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode   = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.custom_minimum_size    = Vector2(0.0, 180.0)
+	scroll.size_flags_vertical    = Control.SIZE_EXPAND_FILL
+	outer.add_child(scroll)
+
+	_coll_list_vbox = VBoxContainer.new()
+	_coll_list_vbox.add_theme_constant_override("separation", 3)
+	_coll_list_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_coll_list_vbox)
+
+	var empty_lbl := Label.new()
+	empty_lbl.name = "EmptyLabel"
+	empty_lbl.text = "Sin colisiones activas."
+	empty_lbl.add_theme_font_size_override("font_size", 10)
+	empty_lbl.add_theme_color_override("font_color", Config.UI.TEXT_SECONDARY_COLOR)
+	_coll_list_vbox.add_child(empty_lbl)
+
+	return outer
+
+
 func _build_right_panel() -> void:
 	_right_panel = PanelContainer.new()
 	_right_panel.anchor_left   = 1.0
@@ -904,6 +959,12 @@ func _connect_signals() -> void:
 	NetworkManager.loading_progress.connect(_on_map_loading_progress)
 	NetworkManager.loading_completed.connect(_on_map_loading_completed)
 	NetworkManager.loading_failed.connect(_on_map_loading_failed)
+
+	# Collision live updates (Phase 3 TFG): the backend broadcasts
+	# MSG_TYPE_VEHICLE_COLLISION on impact; we surface it in the "Colisiones"
+	# tab and let the operator retire the vehicle via a per-row button.
+	SimulationClient.vehicle_collision.connect(_on_vehicle_collision)
+	SimulationClient.vehicle_finished.connect(_on_collision_cleared)
 
 
 # ── Map loading status ────────────────────────────────────────────────────────
@@ -1259,6 +1320,143 @@ func _on_sim_state_changed(new_state: String, _old_state: String) -> void:
 func _on_vehicle_removed(vehicle_id: String) -> void:
 	if _selected_vehicle == vehicle_id:
 		close_right_panel()
+
+
+# ── Collision management (Phase 3 TFG) ────────────────────────────────────────
+
+func _on_vehicle_collision(vid1: String, vid2: String, edge: Array) -> void:
+	var partners := {vid1: vid2, vid2: vid1}
+	for vid in partners.keys():
+		if _collisions.has(vid):
+			continue
+		_collisions[vid] = {
+			"partner_id": partners[vid],
+			"edge": edge.duplicate(),
+			"sim_time": SimulationStateManager.simulation_time,
+		}
+		_add_collision_row(vid)
+	_refresh_collision_summary()
+
+
+func _on_collision_cleared(vehicle_id: String) -> void:
+	# Called when the backend finally removes a vehicle. Mirrors the
+	# collision dict so the Colisiones tab stays in sync even when a clear
+	# was initiated from an API call we did not originate (e.g. another
+	# operator session).
+	if not _collisions.has(vehicle_id):
+		return
+	_collisions.erase(vehicle_id)
+	var row: Control = _coll_rows.get(vehicle_id)
+	if row:
+		row.queue_free()
+		_coll_rows.erase(vehicle_id)
+	if _coll_list_vbox.get_child_count() == 0:
+		var empty := Label.new()
+		empty.name = "EmptyLabel"
+		empty.text = "Sin colisiones activas."
+		empty.add_theme_font_size_override("font_size", 10)
+		empty.add_theme_color_override("font_color", Config.UI.TEXT_SECONDARY_COLOR)
+		_coll_list_vbox.add_child(empty)
+	_refresh_collision_summary()
+
+
+func _add_collision_row(vehicle_id: String) -> void:
+	var empty := _coll_list_vbox.get_node_or_null("EmptyLabel")
+	if empty:
+		_coll_list_vbox.remove_child(empty)
+		empty.queue_free()
+
+	var info: Dictionary = _collisions.get(vehicle_id, {})
+	var edge: Array = info.get("edge", [])
+	var partner: String = info.get("partner_id", "")
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 5)
+
+	var lbl := Label.new()
+	var edge_txt: String = "--"
+	if edge.size() >= 2:
+		edge_txt = "%d→%d" % [int(edge[0]), int(edge[1])]
+	lbl.text = "🚨 %s  (con %s) en %s" % [vehicle_id, partner, edge_txt]
+	lbl.add_theme_font_size_override("font_size", 10)
+	lbl.add_theme_color_override("font_color", Config.UI.ERROR_COLOR)
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
+	row.add_child(lbl)
+
+	var focus_btn := Button.new()
+	focus_btn.text = "📷"
+	focus_btn.tooltip_text = "Seleccionar y seguir el vehículo colisionado"
+	focus_btn.flat = true
+	focus_btn.custom_minimum_size = Vector2(24, 20)
+	focus_btn.pressed.connect(func() -> void:
+		var state := VehicleManager.get_vehicle(vehicle_id)
+		if not state.is_empty():
+			show_vehicle_info(vehicle_id, state)
+			_start_following()
+	)
+	row.add_child(focus_btn)
+
+	var clear_btn := Button.new()
+	clear_btn.text = "Retirar"
+	clear_btn.tooltip_text = "Llamar POST /simulation/vehicles/%s/clear-collision" % vehicle_id
+	clear_btn.add_theme_font_size_override("font_size", 10)
+	clear_btn.pressed.connect(_clear_collision.bind(vehicle_id))
+	row.add_child(clear_btn)
+
+	_coll_list_vbox.add_child(row)
+	_coll_rows[vehicle_id] = row
+
+
+func _clear_collision(vehicle_id: String) -> void:
+	var _r: HTTPResult = await _http.post_request(
+		"/simulation/vehicles/%s/clear-collision" % vehicle_id, {}
+	)
+	# Optimistic removal — if the call fails (e.g. the backend already cleared
+	# it) we'll resync on the next vehicle_finished broadcast.
+	_on_collision_cleared(vehicle_id)
+
+
+func _refresh_collision_summary() -> void:
+	if not is_instance_valid(_coll_summary_lbl):
+		return
+	var n := _collisions.size()
+	_coll_summary_lbl.text = "Colisiones activas: %d" % n
+	var color := Config.UI.ERROR_COLOR if n > 0 else Config.UI.TEXT_SECONDARY_COLOR
+	_coll_summary_lbl.add_theme_color_override("font_color", color)
+
+
+func _refresh_collisions() -> void:
+	# Resync from the server: GET /simulation/collisions. Replaces the local
+	# cache so late-joining operators see everything.
+	var result: HTTPResult = await _http.get_request("/simulation/collisions")
+	if not result.success:
+		return
+	# Wipe current rows
+	for vid in _collisions.keys():
+		var row: Control = _coll_rows.get(vid)
+		if row:
+			row.queue_free()
+	_collisions.clear()
+	_coll_rows.clear()
+
+	var items: Array = []
+	if typeof(result.data) == TYPE_DICTIONARY and result.data.has("collisions"):
+		items = result.data["collisions"]
+	elif typeof(result.data) == TYPE_ARRAY:
+		items = result.data
+
+	for item: Dictionary in items:
+		var vid := JsonUtils.get_string(item, "vehicle_id", "")
+		if vid.is_empty():
+			continue
+		_collisions[vid] = {
+			"partner_id": JsonUtils.get_string(item, "partner_id", ""),
+			"edge": JsonUtils.get_array(item, "edge", []),
+			"sim_time": JsonUtils.get_float(item, "sim_time", 0.0),
+		}
+		_add_collision_row(vid)
+	_refresh_collision_summary()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

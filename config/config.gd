@@ -81,6 +81,7 @@ class SimMessageTypes:
 	const VEHICLE_FINISHED: String = "vehicle_finished"
 	const VEHICLES_BATCH_SPAWNED: String = "vehicles_batch_spawned"
 	const TRAFFIC_LIGHT: String = "traffic_light"
+	const VEHICLE_COLLISION: String = "vehicle_collision"
 
 
 ## Road type colors — light theme, high contrast over near-white ground
@@ -108,6 +109,8 @@ class NodeColors:
 	const INTERSECTION: Color = Color(0.22, 0.25, 0.30)   # Near-black
 	const TRAFFIC_LIGHT: Color= Color(0.85, 0.08, 0.10)   # Strong red
 	const ROUNDABOUT: Color   = Color(0.05, 0.35, 0.70)   # Deep blue
+	const STOP_SIGN: Color    = Color(0.90, 0.05, 0.05)   # Señal STOP roja saturada
+	const YIELD_SIGN: Color   = Color(0.95, 0.75, 0.05)   # Señal CEDA amarilla
 	const DEAD_END: Color     = Color(0.15, 0.15, 0.18)
 	const ENTRY_POINT: Color  = Color(0.05, 0.55, 0.20)   # Deep green
 	const EXIT_POINT: Color   = Color(0.85, 0.40, 0.05)   # Deep orange

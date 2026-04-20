@@ -174,7 +174,14 @@ func _render_single_road(edge: EdgeData) -> void:
 		return
 
 	var color := _get_road_color(edge.road_type)
+	# Roundabouts get a slightly desaturated teal so they pop against ordinary
+	# asphalt. The extra width reinforces the visual cue — an operator should
+	# be able to spot a roundabout from the camera altitude the HUD defaults to.
+	if edge.is_roundabout:
+		color = color.lerp(Color(0.20, 0.55, 0.60), 0.55)
 	var width := _get_road_width(edge.lanes)
+	if edge.is_roundabout:
+		width *= 1.25
 	var half_width := width / 2.0
 	var elevation := Config.EdgeRendering.ROAD_ELEVATION
 

@@ -54,6 +54,12 @@ var lanes: int = 1
 ## Whether the road is one-way
 var one_way: bool = false
 
+## Whether this edge belongs to a roundabout ring
+var is_roundabout: bool = false
+
+## Connected roundabout component identifier (null if not in a roundabout)
+var roundabout_id: int = -1
+
 ## Whether the edge is active in simulation
 var is_active: bool = true
 
@@ -74,6 +80,8 @@ static func from_dict(data: Dictionary) -> EdgeData:
 	edge.max_speed = JsonUtils.get_int(data, "max_speed", 50)
 	edge.lanes = JsonUtils.get_int(data, "lanes", 1)
 	edge.one_way = JsonUtils.get_bool(data, "one_way", false)
+	edge.is_roundabout = JsonUtils.get_bool(data, "is_roundabout", false)
+	edge.roundabout_id = JsonUtils.get_int(data, "roundabout_id", -1)
 	edge.is_active = JsonUtils.get_bool(data, "is_active", true)
 
 	# Parse GeoJSON geometry
@@ -106,6 +114,8 @@ func to_dict() -> Dictionary:
 		"max_speed": max_speed,
 		"lanes": lanes,
 		"one_way": one_way,
+		"is_roundabout": is_roundabout,
+		"roundabout_id": roundabout_id,
 		"is_active": is_active
 	}
 

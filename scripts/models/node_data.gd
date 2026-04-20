@@ -9,6 +9,8 @@ enum NodeType {
 	INTERSECTION,
 	TRAFFIC_LIGHT,
 	ROUNDABOUT,
+	STOP_SIGN,
+	YIELD_SIGN,
 	DEAD_END,
 	ENTRY_POINT,
 	EXIT_POINT,
@@ -101,6 +103,10 @@ static func _parse_node_type(node_type_str: String) -> NodeType:
 			return NodeType.TRAFFIC_LIGHT
 		"roundabout":
 			return NodeType.ROUNDABOUT
+		"stop_sign":
+			return NodeType.STOP_SIGN
+		"yield_sign":
+			return NodeType.YIELD_SIGN
 		"dead_end":
 			return NodeType.DEAD_END
 		"entry_point":
