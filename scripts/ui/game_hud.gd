@@ -408,7 +408,9 @@ func _build_tab_sim() -> VBoxContainer:
 
 	_spawn_count = SpinBox.new()
 	_spawn_count.min_value = 1
-	_spawn_count.max_value = 1000
+	_spawn_count.max_value = 1_000_000
+	_spawn_count.step = 1
+	_spawn_count.rounded = true
 	_spawn_count.value = 10
 	_spawn_count.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spawn_row.add_child(_spawn_count)
