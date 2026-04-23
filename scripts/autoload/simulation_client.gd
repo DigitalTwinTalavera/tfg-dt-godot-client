@@ -45,6 +45,14 @@ signal vehicles_batch_spawned(vehicles: Array)
 ## Fired for traffic light state updates
 signal traffic_light_received(data: Dictionary)
 
+## Incidente de tráfico (alta/actualización/baja).
+## payload: { action: "created"|"updated"|"cleared", incident: {...} }
+signal incident_received(data: Dictionary)
+
+## Zona de control (ZBE/restringida/peatonal) cambiada.
+## payload: { action: "created"|"updated"|"cleared", zone: {...} }
+signal zone_received(data: Dictionary)
+
 
 ## Connection state machine -----------------------------------------------
 
@@ -256,6 +264,12 @@ func _route_message(msg: Dictionary) -> void:
 			var vid2 := JsonUtils.get_string(msg, "vehicle_id_2", "")
 			var edge := JsonUtils.get_array(msg, "blocked_edge", [])
 			vehicle_collision.emit(vid1, vid2, edge)
+
+		Config.SimMessageTypes.INCIDENT:
+			incident_received.emit(msg)
+
+		Config.SimMessageTypes.ZONE:
+			zone_received.emit(msg)
 
 		_:
 			_log_warning("Unknown message type: '%s'" % type)

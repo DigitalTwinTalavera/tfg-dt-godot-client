@@ -82,6 +82,8 @@ class SimMessageTypes:
 	const VEHICLES_BATCH_SPAWNED: String = "vehicles_batch_spawned"
 	const TRAFFIC_LIGHT: String = "traffic_light"
 	const VEHICLE_COLLISION: String = "vehicle_collision"
+	const INCIDENT: String = "incident"
+	const ZONE: String = "zone"
 
 
 ## Road type colors — light theme, high contrast over near-white ground

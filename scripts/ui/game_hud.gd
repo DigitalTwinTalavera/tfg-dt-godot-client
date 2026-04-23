@@ -33,13 +33,20 @@ signal reload_map_requested()
 signal arrows_visibility_changed(visible_flag: bool)
 signal camera_speed_changed(speed: float)
 signal camera_smooth_changed(enabled: bool)
+## Módulo 4 — modos de operador que la escena debe enganchar al input del mapa.
+signal incident_mode_requested()
+signal zone_draw_mode_requested()
+signal operator_mode_cancelled()
+signal right_panel_closed()
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 const TOP_BAR_HEIGHT:    float = 30.0
 const TAB_BAR_HEIGHT:    float = 40.0
+const TAB_IDX_INCIDENTS: int = 5
+const TAB_IDX_ZONES:     int = 6
 const RIGHT_PANEL_WIDTH: float = 260.0
-const TAB_COUNT:         int   = 5
+const TAB_COUNT:         int   = 7
 const RIGHT_ANIM_TIME:   float = 0.2
 
 
@@ -234,16 +241,43 @@ func show_vehicle_info(vehicle_id: String, state: Dictionary) -> void:
 
 
 func show_node_info(node_id: int, node_type: String) -> void:
-	if node_type != "traffic_light":
+	# `node_type` llega de NodeData.get_type_string(), que aplica
+	# capitalize()+replace("_"," ") → "Traffic Light". Normalizamos para
+	# aceptar tanto "traffic_light" como "Traffic Light" / "TRAFFIC_LIGHT".
+	var normalized := node_type.to_lower().replace(" ", "_")
+	if normalized != "traffic_light":
 		return
 	_selected_node    = node_id
 	_selected_vehicle = ""
 	_vehicle_panel.visible  = false
 	_tl_panel_right.visible = true
 	_tlp_title.text = "Semáforo #%d" % node_id
-	var phase: String = TrafficLightManager.traffic_lights.get(node_id, "desconocido")
-	_tlp_state.text = "Fase: %s" % phase
+	_tlp_state.text = "Fase: %s" % _format_tl_phases(node_id)
 	_show_right_panel(true)
+
+
+func _format_tl_phases(node_id: int) -> String:
+	# TrafficLightManager.traffic_lights = {node_id: {edge_key: phase}}
+	# Mostramos hasta 4 ramas con icono de color por fase.
+	var edges: Dictionary = TrafficLightManager.traffic_lights.get(node_id, {})
+	if edges.is_empty():
+		return "desconocido"
+	var parts: Array[String] = []
+	var i := 0
+	for ek in edges:
+		if i >= 4:
+			break
+		var ph := String(edges[ek])
+		var icon := "🟢"
+		match ph:
+			"yellow": icon = "🟡"
+			"red":    icon = "🔴"
+			_:         icon = "🟢"
+		# Mostrar sólo el id origen de la arista para compactar (ek = "u_v").
+		var src := "*" if String(ek) == "*" else String(ek).split("_")[0]
+		parts.append("%s %s" % [icon, src])
+		i += 1
+	return "  ".join(parts)
 
 
 func close_right_panel() -> void:
@@ -252,6 +286,7 @@ func close_right_panel() -> void:
 	_show_right_panel(false)
 	if _following:
 		_stop_following()
+	right_panel_closed.emit()
 
 
 # ── Build UI ──────────────────────────────────────────────────────────────────
@@ -324,6 +359,8 @@ func _build_bottombar() -> void:
 	_tab_panels[2] = _build_tab_map()
 	_tab_panels[3] = _build_tab_settings()
 	_tab_panels[4] = _build_tab_collisions()
+	_tab_panels[TAB_IDX_INCIDENTS] = _build_tab_incidents()
+	_tab_panels[TAB_IDX_ZONES]     = _build_tab_zones()
 	for p in _tab_panels:
 		p.visible = false
 		content_stack.add_child(p)
@@ -343,13 +380,18 @@ func _build_bottombar() -> void:
 	hbox.add_theme_constant_override("separation", 2)
 	_tab_bar.add_child(hbox)
 
-	var tab_labels := ["▶  Simulación", "🚦 Semáforos", "🗺 Mapa", "⚙ Ajustes", "🚨 Colisiones"]
+	var tab_labels := [
+		"▶  Simulación", "🚦 Semáforos", "🗺 Mapa", "⚙ Ajustes",
+		"🚨 Colisiones", "⚠️ Incidentes", "🌿 Zonas",
+	]
 	var tab_tooltips := [
 		"Controlar la simulación (iniciar, pausar, detener, generar vehículos)",
 		"Estado y control global de los semáforos",
 		"Capas visibles, estadísticas de la red y recargar el mapa",
 		"Configuración de cámara, depuración e información de la aplicación",
 		"Vehículos colisionados — requieren retirada manual (gemelo digital)",
+		"Incidentes activos — accidentes, obras, averías, eventos",
+		"Zonas de control — ZBE, restringidas, peatonales",
 	]
 	_tab_btns.resize(TAB_COUNT)
 	for i in range(TAB_COUNT):
@@ -1166,11 +1208,16 @@ func _tl_post(endpoint: String) -> void:
 func _tl_node_override(phase: String) -> void:
 	if _selected_node < 0:
 		return
+	var ep := "/simulation/traffic-lights/%d/override" % _selected_node
 	if phase == "auto":
-		# clear individual override — not yet in API, use per-node future endpoint
+		var _r := await _api_call(
+			"DELETE", ep, {}, "Semáforo #%d → ciclo normal" % _selected_node,
+		)
 		return
-	var ep := "/simulation/traffic-lights/node/%d/%s" % [_selected_node, phase]
-	var _r := await _http.post_request(ep, {})
+	var _r2 := await _api_call(
+		"POST", ep, {"phase": phase},
+		"Semáforo #%d → %s" % [_selected_node, phase],
+	)
 
 
 # ── Vehicle control ───────────────────────────────────────────────────────────
@@ -1224,6 +1271,7 @@ func _on_vehicle_speed_changed(value: float) -> void:
 
 func _on_reroute_start() -> void:
 	_reroute_mode = true
+	set_mode_hint("Reasignar destino: haz click en un nodo del mapa · Esc para cancelar")
 	# The next click on the map (handled by test_node_renderer) will call
 	# set_reroute_target(node_id) on this HUD.
 
@@ -1232,6 +1280,7 @@ func set_reroute_target(node_id: int) -> void:
 	if not _reroute_mode or _selected_vehicle.is_empty():
 		return
 	_reroute_mode = false
+	set_mode_hint("")
 	var _r := await _http.post_request(
 		"/simulation/vehicles/%s/reroute" % _selected_vehicle,
 		{"end_node_id": node_id}
@@ -1254,7 +1303,8 @@ func _on_tl_updated(node_id: int, phase: String) -> void:
 	_update_tl_indicator(node_id, phase)
 	_update_tl_summary()
 	if _selected_node == node_id:
-		_tlp_state.text = "Fase: %s" % phase
+		# Reformatear con todas las ramas (no solo la representativa).
+		_tlp_state.text = "Fase: %s" % _format_tl_phases(node_id)
 
 
 func _update_tl_indicator(node_id: int, phase: String) -> void:
@@ -1654,3 +1704,488 @@ func is_reroute_mode() -> bool:
 
 func cancel_reroute() -> void:
 	_reroute_mode = false
+	set_mode_hint("")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Módulo 4 — Incidentes, Zonas ZBE y ruta de vehículo
+# ══════════════════════════════════════════════════════════════════════════════
+
+var _hint_label: Label = null
+var _inc_list_vbox: VBoxContainer = null
+var _inc_summary_lbl: Label = null
+var _zn_list_vbox: VBoxContainer = null
+var _zn_summary_lbl: Label = null
+var _zn_vehicle_counter_timer: Timer = null
+
+
+## Banner contextual que explica el modo activo (p.ej. "click en inicio").
+## La escena lo llama al entrar/salir de un modo de operador.
+func set_mode_hint(text: String) -> void:
+	if _hint_label == null:
+		_hint_label = Label.new()
+		_hint_label.anchor_left = 0.5
+		_hint_label.anchor_right = 0.5
+		_hint_label.anchor_top = 0.0
+		_hint_label.offset_top = TOP_BAR_HEIGHT + 8.0
+		_hint_label.offset_left = -260.0
+		_hint_label.offset_right = 260.0
+		_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_hint_label.add_theme_color_override("font_color", Color(1.0, 0.95, 0.4))
+		_hint_label.add_theme_font_size_override("font_size", 14)
+		add_child(_hint_label)
+	_hint_label.text = text
+	_hint_label.visible = not text.is_empty()
+
+
+# ── Tab: Incidentes ────────────────────────────────────────────────────────
+
+func _build_tab_incidents() -> VBoxContainer:
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+
+	var hdr := HBoxContainer.new()
+	hdr.add_theme_constant_override("separation", 8)
+	vbox.add_child(hdr)
+
+	var create_btn := _make_btn("⚠️ Crear incidente (seleccionar arista)")
+	create_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	create_btn.pressed.connect(func() -> void:
+		incident_mode_requested.emit()
+	)
+	hdr.add_child(create_btn)
+
+	var clear_all_btn := _make_btn("Limpiar todo")
+	clear_all_btn.pressed.connect(_clear_all_incidents)
+	hdr.add_child(clear_all_btn)
+
+	_inc_summary_lbl = Label.new()
+	_inc_summary_lbl.text = "Activos: 0"
+	_inc_summary_lbl.add_theme_color_override("font_color", Config.UI.TEXT_SECONDARY_COLOR)
+	vbox.add_child(_inc_summary_lbl)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.custom_minimum_size = Vector2(0, 240)
+	vbox.add_child(scroll)
+
+	_inc_list_vbox = VBoxContainer.new()
+	_inc_list_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_inc_list_vbox.add_theme_constant_override("separation", 4)
+	scroll.add_child(_inc_list_vbox)
+
+	# Subscripciones
+	IncidentManager.incident_created.connect(func(_id, _d): _refresh_incidents_tab())
+	IncidentManager.incident_updated.connect(func(_id, _d): _refresh_incidents_tab())
+	IncidentManager.incident_cleared.connect(func(_id, _d): _refresh_incidents_tab())
+
+	return vbox
+
+
+func _refresh_incidents_tab() -> void:
+	if _inc_list_vbox == null:
+		return
+	for c in _inc_list_vbox.get_children():
+		c.queue_free()
+	var active: Array = IncidentManager.get_all_incidents()
+	_inc_summary_lbl.text = "Activos: %d" % active.size()
+	for inc in active:
+		var row := _build_incident_row(inc)
+		_inc_list_vbox.add_child(row)
+
+
+func _build_incident_row(data: Dictionary) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+
+	var iid := int(data.get("id", 0))
+	var type_ := String(data.get("type", "?"))
+	var edge: Array = data.get("edge", [])
+	var lanes: Array = data.get("lanes_affected", [])
+	var dur = data.get("duration_s", null)
+
+	var lbl := Label.new()
+	lbl.text = "#%d %s · %d→%d · carriles %s · %s" % [
+		iid, type_,
+		edge[0] if edge.size() > 0 else 0,
+		edge[1] if edge.size() > 1 else 0,
+		str(lanes),
+		"permanente" if dur == null else "%.0fs" % float(dur),
+	]
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.add_theme_font_size_override("font_size", 12)
+	row.add_child(lbl)
+
+	var clear_btn := _make_btn("Cerrar")
+	clear_btn.pressed.connect(func() -> void:
+		var _r := await _http.delete_request("/incidents/%d" % iid)
+	)
+	row.add_child(clear_btn)
+	return row
+
+
+func _clear_all_incidents() -> void:
+	for inc in IncidentManager.get_all_incidents():
+		var iid := int(inc.get("id", 0))
+		var _r := await _http.delete_request("/incidents/%d" % iid)
+
+
+# ── Diálogo: crear incidente ─────────────────────────────────────────────
+
+func open_incident_dialog(u: int, v: int) -> void:
+	var win := AcceptDialog.new()
+	win.title = "Crear incidente  %d → %d" % [u, v]
+	win.min_size = Vector2(420, 260)
+	win.add_cancel_button("Cancelar")
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	win.add_child(vb)
+
+	var row_type := HBoxContainer.new()
+	row_type.add_child(_make_label("Tipo:"))
+	var opt_type := OptionButton.new()
+	opt_type.add_item("Accidente", 0)
+	opt_type.add_item("Obra",      1)
+	opt_type.add_item("Avería",    2)
+	opt_type.add_item("Evento",    3)
+	opt_type.select(1)
+	row_type.add_child(opt_type)
+	vb.add_child(row_type)
+
+	var row_lanes := HBoxContainer.new()
+	row_lanes.add_child(_make_label("Carriles cerrados (coma-separados, ej 0,1):"))
+	var inp_lanes := LineEdit.new()
+	inp_lanes.placeholder_text = "0"
+	inp_lanes.text = "0"
+	inp_lanes.custom_minimum_size = Vector2(80, 0)
+	row_lanes.add_child(inp_lanes)
+	vb.add_child(row_lanes)
+
+	var row_dur := HBoxContainer.new()
+	row_dur.add_child(_make_label("Duración (segundos, 0 = permanente):"))
+	var inp_dur := LineEdit.new()
+	inp_dur.placeholder_text = "300"
+	inp_dur.text = "300"
+	row_dur.add_child(inp_dur)
+	vb.add_child(row_dur)
+
+	var row_sev := HBoxContainer.new()
+	row_sev.add_child(_make_label("Severidad (1–3):"))
+	var inp_sev := SpinBox.new()
+	inp_sev.min_value = 1
+	inp_sev.max_value = 3
+	inp_sev.value = 2
+	row_sev.add_child(inp_sev)
+	vb.add_child(row_sev)
+
+	var row_desc := HBoxContainer.new()
+	row_desc.add_child(_make_label("Descripción:"))
+	var inp_desc := LineEdit.new()
+	inp_desc.custom_minimum_size = Vector2(180, 0)
+	row_desc.add_child(inp_desc)
+	vb.add_child(row_desc)
+
+	add_child(win)
+	win.popup_centered()
+
+	win.confirmed.connect(func() -> void:
+		var type_map := ["accident", "roadwork", "breakdown", "event"]
+		var lanes_arr: Array = []
+		for s in inp_lanes.text.split(","):
+			var trimmed := s.strip_edges()
+			if trimmed.is_valid_int():
+				lanes_arr.append(int(trimmed))
+		var dur_f := float(inp_dur.text) if inp_dur.text.is_valid_float() else 0.0
+		var payload := {
+			"type": type_map[opt_type.get_selected_id()],
+			"edge": [u, v],
+			"lanes_affected": lanes_arr,
+			"duration_s": null if dur_f <= 0.0 else dur_f,
+			"severity": int(inp_sev.value),
+			"description": inp_desc.text,
+		}
+		var _r := await _api_call(
+			"POST", "/incidents", payload,
+			"Incidente creado en arista %d → %d" % [u, v],
+		)
+		win.queue_free()
+	)
+	win.canceled.connect(func() -> void: win.queue_free())
+
+
+# ── Tab: Zonas ──────────────────────────────────────────────────────────
+
+func _build_tab_zones() -> VBoxContainer:
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+
+	var hdr := HBoxContainer.new()
+	hdr.add_theme_constant_override("separation", 8)
+	vbox.add_child(hdr)
+
+	var create_btn := _make_btn("🌿 Dibujar zona (clicks en el mapa)")
+	create_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	create_btn.pressed.connect(func() -> void:
+		zone_draw_mode_requested.emit()
+	)
+	hdr.add_child(create_btn)
+
+	_zn_summary_lbl = Label.new()
+	_zn_summary_lbl.text = "Zonas: 0"
+	_zn_summary_lbl.add_theme_color_override("font_color", Config.UI.TEXT_SECONDARY_COLOR)
+	vbox.add_child(_zn_summary_lbl)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.custom_minimum_size = Vector2(0, 240)
+	vbox.add_child(scroll)
+
+	_zn_list_vbox = VBoxContainer.new()
+	_zn_list_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_zn_list_vbox.add_theme_constant_override("separation", 4)
+	scroll.add_child(_zn_list_vbox)
+
+	# Suscripciones + counter periódico
+	ZoneManager.zone_created.connect(func(_id, _d): _refresh_zones_tab())
+	ZoneManager.zone_updated.connect(func(_id, _d): _refresh_zones_tab())
+	ZoneManager.zone_cleared.connect(func(_id, _d): _refresh_zones_tab())
+
+	_zn_vehicle_counter_timer = Timer.new()
+	_zn_vehicle_counter_timer.wait_time = 1.0
+	_zn_vehicle_counter_timer.autostart = true
+	_zn_vehicle_counter_timer.timeout.connect(_refresh_zones_tab)
+	add_child(_zn_vehicle_counter_timer)
+
+	return vbox
+
+
+func _refresh_zones_tab() -> void:
+	if _zn_list_vbox == null:
+		return
+	var zones: Array = ZoneManager.get_all_zones()
+	_zn_summary_lbl.text = "Zonas: %d (%d activas)" % [
+		zones.size(),
+		ZoneManager.get_active_zones().size(),
+	]
+	for c in _zn_list_vbox.get_children():
+		c.queue_free()
+	for z in zones:
+		_zn_list_vbox.add_child(_build_zone_row(z))
+
+
+func _build_zone_row(data: Dictionary) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+
+	var zid := int(data.get("id", 0))
+	var name_ := String(data.get("name", "?"))
+	var ztype := String(data.get("zone_type", "?"))
+	var enforcement := String(data.get("enforcement", "?"))
+	var restricted: Array = data.get("restricted_vtypes", [])
+	var active := bool(data.get("active", true))
+	var edges_count := int(data.get("edges_count", 0))
+
+	var lbl := Label.new()
+	lbl.text = "#%d %s · %s · %s · restringe %s · %d aristas · %s · %d veh." % [
+		zid, name_, ztype, enforcement,
+		str(restricted),
+		edges_count,
+		"ACTIVA" if active else "INACTIVA",
+		_count_vehicles_in_zone(data),
+	]
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.add_theme_font_size_override("font_size", 12)
+	row.add_child(lbl)
+
+	var toggle_btn := _make_btn("Desactivar" if active else "Activar")
+	toggle_btn.pressed.connect(func() -> void:
+		var _r := await _http.put_request("/zones/%d" % zid, {"active": not active})
+	)
+	row.add_child(toggle_btn)
+
+	var del_btn := _make_btn("Borrar")
+	del_btn.pressed.connect(func() -> void:
+		var _r := await _http.delete_request("/zones/%d" % zid)
+	)
+	row.add_child(del_btn)
+
+	return row
+
+
+## Contador aproximado (point-in-polygon) — solo veh. activos cuya lon/lat
+## conocemos vía VehicleManager. Útil como métrica rápida; no sustituye al
+## motor de analíticas (Módulo 5).
+func _count_vehicles_in_zone(zone: Dictionary) -> int:
+	var coords: Array = zone.get("polygon_coords", [])
+	if coords.size() < 3:
+		return 0
+	var poly := PackedVector2Array()
+	for p in coords:
+		if p.size() >= 2:
+			poly.append(Vector2(float(p[0]), float(p[1])))
+	var n := 0
+	for vid in VehicleManager.vehicles:
+		var v: Dictionary = VehicleManager.vehicles[vid]
+		var lon := float(v.get("lon", 0.0))
+		var lat := float(v.get("lat", 0.0))
+		if lon == 0.0 and lat == 0.0:
+			continue
+		if Geometry2D.is_point_in_polygon(Vector2(lon, lat), poly):
+			n += 1
+	return n
+
+
+# ── Diálogo: crear zona ─────────────────────────────────────────────────
+
+func open_zone_dialog(coords: Array) -> void:
+	var win := AcceptDialog.new()
+	win.title = "Nueva zona (%d vértices)" % coords.size()
+	win.min_size = Vector2(420, 300)
+	win.add_cancel_button("Cancelar")
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	win.add_child(vb)
+
+	var row_name := HBoxContainer.new()
+	row_name.add_child(_make_label("Nombre:"))
+	var inp_name := LineEdit.new()
+	inp_name.text = "ZBE Centro"
+	inp_name.custom_minimum_size = Vector2(200, 0)
+	row_name.add_child(inp_name)
+	vb.add_child(row_name)
+
+	var row_type := HBoxContainer.new()
+	row_type.add_child(_make_label("Tipo de zona:"))
+	var opt_type := OptionButton.new()
+	opt_type.add_item("ZBE",        0)
+	opt_type.add_item("Restringida", 1)
+	opt_type.add_item("Peatonal",   2)
+	row_type.add_child(opt_type)
+	vb.add_child(row_type)
+
+	var row_vtypes := HBoxContainer.new()
+	row_vtypes.add_child(_make_label("Restringe:"))
+	var cb_car := CheckBox.new(); cb_car.text = "coches"
+	var cb_moto := CheckBox.new(); cb_moto.text = "motos"
+	var cb_truck := CheckBox.new(); cb_truck.text = "camiones"; cb_truck.button_pressed = true
+	row_vtypes.add_child(cb_car)
+	row_vtypes.add_child(cb_moto)
+	row_vtypes.add_child(cb_truck)
+	vb.add_child(row_vtypes)
+
+	var row_enf := HBoxContainer.new()
+	row_enf.add_child(_make_label("Aplicación:"))
+	var opt_enf := OptionButton.new()
+	opt_enf.add_item("Reruteo forzado", 0)
+	opt_enf.add_item("Denegar spawn",   1)
+	opt_enf.add_item("Solo avisar",     2)
+	row_enf.add_child(opt_enf)
+	vb.add_child(row_enf)
+
+	add_child(win)
+	win.popup_centered()
+
+	win.confirmed.connect(func() -> void:
+		var ztype_map := ["zbe", "restricted", "pedestrian"]
+		var enf_map := ["force_reroute", "deny_spawn", "warn"]
+		var restricted: Array = []
+		if cb_car.button_pressed: restricted.append("car")
+		if cb_moto.button_pressed: restricted.append("moto")
+		if cb_truck.button_pressed: restricted.append("truck")
+		# Construir WKT POLYGON((lon lat, ..., lon1 lat1)) — cerrado.
+		var parts: PackedStringArray = PackedStringArray()
+		for p in coords:
+			parts.append("%f %f" % [float(p[0]), float(p[1])])
+		parts.append("%f %f" % [float(coords[0][0]), float(coords[0][1])])
+		var wkt := "POLYGON((" + ", ".join(parts) + "))"
+		var payload := {
+			"name": inp_name.text,
+			"zone_type": ztype_map[opt_type.get_selected_id()],
+			"geometry_wkt": wkt,
+			"restricted_vtypes": restricted,
+			"enforcement": enf_map[opt_enf.get_selected_id()],
+			"active": true,
+		}
+		var _r := await _api_call(
+			"POST", "/zones", payload,
+			"Zona '%s' creada" % inp_name.text,
+		)
+		win.queue_free()
+	)
+	win.canceled.connect(func() -> void: win.queue_free())
+
+
+# ── Helper UI ───────────────────────────────────────────────────────────
+
+func _make_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 12)
+	return l
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Toast helper — feedback visible para llamadas HTTP
+# ══════════════════════════════════════════════════════════════════════════════
+
+var _toast_label: Label = null
+var _toast_timer: Timer = null
+
+
+func _show_toast(msg: String, is_error: bool = false, seconds: float = 4.0) -> void:
+	if _toast_label == null:
+		_toast_label = Label.new()
+		_toast_label.anchor_left = 0.5
+		_toast_label.anchor_right = 0.5
+		_toast_label.anchor_top = 1.0
+		_toast_label.anchor_bottom = 1.0
+		_toast_label.offset_bottom = -TAB_BAR_HEIGHT - 10
+		_toast_label.offset_top = -TAB_BAR_HEIGHT - 40
+		_toast_label.offset_left = -300.0
+		_toast_label.offset_right = 300.0
+		_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_toast_label.add_theme_font_size_override("font_size", 13)
+		add_child(_toast_label)
+		_toast_timer = Timer.new()
+		_toast_timer.one_shot = true
+		_toast_timer.timeout.connect(func() -> void: _toast_label.visible = false)
+		add_child(_toast_timer)
+	_toast_label.text = msg
+	_toast_label.add_theme_color_override(
+		"font_color",
+		Color(1.0, 0.35, 0.35) if is_error else Color(0.35, 1.0, 0.55),
+	)
+	_toast_label.visible = true
+	_toast_timer.start(seconds)
+
+
+## Envolvente de POST/PUT/DELETE que muestra toast si hay error.
+func _api_call(
+	method: String,
+	endpoint: String,
+	payload: Dictionary = {},
+	success_msg: String = "",
+) -> HTTPResult:
+	var result: HTTPResult
+	match method.to_upper():
+		"POST":
+			result = await _http.post_request(endpoint, payload)
+		"PUT":
+			result = await _http.put_request(endpoint, payload)
+		"DELETE":
+			result = await _http.delete_request(endpoint)
+		_:
+			result = await _http.get_request(endpoint)
+	if not result.success:
+		var detail := ""
+		if result.data is Dictionary:
+			detail = String(result.data.get("detail", ""))
+		_show_toast(
+			"Error %d %s  %s" % [result.status_code, endpoint, detail],
+			true,
+			6.0,
+		)
+	elif not success_msg.is_empty():
+		_show_toast(success_msg, false, 3.0)
+	return result

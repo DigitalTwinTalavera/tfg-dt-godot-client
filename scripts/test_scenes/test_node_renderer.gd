@@ -13,6 +13,17 @@ extends Node3D
 ## Simulation UI / rendering — created programmatically in _ready()
 var _vehicle_renderer: VehicleRenderer
 var _hud: GameHUD
+var _incident_renderer: IncidentRenderer
+var _zone_renderer: ZoneRenderer
+var _route_renderer: RouteRenderer
+
+## Estado de modos de operador: creación de incidente (seleccionar arista por
+## clicks sucesivos en 2 nodos) y dibujo de zona (polígono por clicks).
+enum Mode { DEFAULT, INCIDENT_PICK_START, INCIDENT_PICK_END, ZONE_DRAWING }
+var _mode: int = Mode.DEFAULT
+var _incident_first_node: int = -1
+var _zone_vertices_world: PackedVector3Array = PackedVector3Array()
+var _zone_preview: MeshInstance3D = null
 
 ## Follow vehicle
 var _follow_vehicle_id: String = ""
@@ -62,16 +73,25 @@ func _setup_sim_components() -> void:
 	add_child(_vehicle_renderer)
 	_vehicle_renderer.set_camera(camera)
 
+	# Renderers para incidentes, zonas y ruta seleccionada (Módulo 4)
+	_incident_renderer = IncidentRenderer.new()
+	add_child(_incident_renderer)
+	_zone_renderer = ZoneRenderer.new()
+	add_child(_zone_renderer)
+	_route_renderer = RouteRenderer.new()
+	add_child(_route_renderer)
+
 	_hud = GameHUD.new()
 	_hud.set_camera(camera)
 	_hud.set_converter(_converter)
 	_hud.set_renderers(node_renderer, edge_renderer, _vehicle_renderer)
 	add_child(_hud)
 
-	# Vehicle click → HUD right panel
+	# Vehicle click → HUD right panel + dibujar ruta pendiente
 	_vehicle_renderer.vehicle_selected.connect(
 		func(vid: String, state: Dictionary) -> void:
 			_hud.show_vehicle_info(vid, state)
+			_show_route_for_vehicle(vid)
 	)
 
 	# HUD follow signals → camera
@@ -82,6 +102,12 @@ func _setup_sim_components() -> void:
 	_hud.reset_camera_requested.connect(_on_reset_camera)
 	_hud.reload_map_requested.connect(_on_reload_map)
 	_hud.camera_speed_changed.connect(_on_camera_speed_changed)
+
+	# HUD → modos operador
+	_hud.incident_mode_requested.connect(_on_incident_mode_start)
+	_hud.zone_draw_mode_requested.connect(_on_zone_draw_mode_start)
+	_hud.operator_mode_cancelled.connect(_on_operator_mode_cancel)
+	_hud.right_panel_closed.connect(func() -> void: _route_renderer.clear_route())
 
 
 func _connect_signals() -> void:
@@ -176,6 +202,10 @@ func _input(event: InputEvent) -> void:
 					_hud.set_reroute_target(node.id)
 				else:
 					_hud.cancel_reroute()
+			elif _mode == Mode.INCIDENT_PICK_START or _mode == Mode.INCIDENT_PICK_END:
+				_handle_incident_click(mouse_event.position)
+			elif _mode == Mode.ZONE_DRAWING:
+				_handle_zone_click(mouse_event.position, mouse_event.double_click)
 			else:
 				_handle_node_click(mouse_event.position)
 
@@ -258,6 +288,9 @@ func _on_loading_completed(network: RoadNetwork) -> void:
 	if _hud:
 		_hud.update_render_stats(node_renderer.get_stats(), edge_renderer.get_stats())
 
+	# Módulo 4: conectar renderers a red + converter una vez cargada la red.
+	_wire_module4_renderers()
+
 
 ## Render the complete network (nodes and edges). The HUD checkboxes drive
 ## visibility directly on the renderers, so we always render both and let the
@@ -318,3 +351,164 @@ func _on_edge_render_complete(edge_count: int) -> void:
 func _on_node_selected(node: NodeData) -> void:
 	if Config.should_log(Config.LogLevel.DEBUG):
 		print("[TestNetworkRenderer] Selected node: %d (%s)" % [node.id, node.get_type_string()])
+
+
+## ── Renderers de Módulo 4 ────────────────────────────────────────────────
+
+func _wire_module4_renderers() -> void:
+	if _converter == null or not NetworkManager.is_loaded:
+		return
+	var net: RoadNetwork = NetworkManager.network
+	var node_lookup := func(id: int) -> Vector2:
+		var n: NodeData = net.get_node(id)
+		if n == null:
+			return Vector2.ZERO
+		return Vector2(n.longitude, n.latitude)
+	_incident_renderer.setup(_converter, node_lookup)
+	_zone_renderer.setup(_converter)
+	_route_renderer.setup(_converter, net)
+
+
+## ── Ruta del vehículo seleccionado ──────────────────────────────────────
+
+func _show_route_for_vehicle(vehicle_id: String) -> void:
+	if _route_renderer == null:
+		return
+	var state: Dictionary = VehicleManager.get_vehicle(vehicle_id)
+	if state.is_empty():
+		_route_renderer.clear_route()
+		return
+	var edges: Array = state.get("route_edges", [])
+	var idx: int = int(state.get("edge_idx", 0))
+	_route_renderer.show_route(edges, idx)
+
+
+## ── Modos de operador: incidentes ───────────────────────────────────────
+
+func _on_incident_mode_start() -> void:
+	_mode = Mode.INCIDENT_PICK_START
+	_incident_first_node = -1
+	_hud.set_mode_hint("Incidente: haz click en el nodo de INICIO de la arista")
+
+
+func _on_zone_draw_mode_start() -> void:
+	_mode = Mode.ZONE_DRAWING
+	_zone_vertices_world.clear()
+	_refresh_zone_preview()
+	_hud.set_mode_hint(
+		"Zona: clicks añaden vértices · doble-click o Enter para cerrar · Esc para cancelar"
+	)
+
+
+func _on_operator_mode_cancel() -> void:
+	_mode = Mode.DEFAULT
+	_incident_first_node = -1
+	_zone_vertices_world.clear()
+	_refresh_zone_preview()
+	_hud.set_mode_hint("")
+
+
+func _handle_incident_click(screen_pos: Vector2) -> void:
+	var node := node_renderer.get_node_at_position(screen_pos, camera)
+	if node == null:
+		_hud.set_mode_hint("Haz click sobre un nodo del mapa (no un espacio vacío)")
+		return
+	if _mode == Mode.INCIDENT_PICK_START:
+		_incident_first_node = node.id
+		_mode = Mode.INCIDENT_PICK_END
+		_hud.set_mode_hint(
+			"Inicio %d · ahora click en el nodo de FIN (sentido de la arista)" % node.id
+		)
+		return
+	# INCIDENT_PICK_END
+	if node.id == _incident_first_node:
+		_hud.set_mode_hint("No se puede elegir el mismo nodo como fin")
+		return
+	var u := _incident_first_node
+	var v := node.id
+	_mode = Mode.DEFAULT
+	_incident_first_node = -1
+	_hud.open_incident_dialog(u, v)
+
+
+## ── Modos de operador: zona (polígono) ──────────────────────────────────
+
+func _handle_zone_click(screen_pos: Vector2, is_double: bool) -> void:
+	# Convertir el screen_pos a punto en el suelo (Y=0).
+	var world := _screen_to_ground(screen_pos)
+	if world == Vector3.INF:
+		return
+	if is_double and _zone_vertices_world.size() >= 3:
+		_finish_zone_drawing()
+		return
+	_zone_vertices_world.append(world)
+	_refresh_zone_preview()
+	_hud.set_mode_hint(
+		"Zona: %d vértices · doble-click o Enter para cerrar" % _zone_vertices_world.size()
+	)
+
+
+func _screen_to_ground(screen_pos: Vector2) -> Vector3:
+	if camera == null:
+		return Vector3.INF
+	var origin := camera.project_ray_origin(screen_pos)
+	var dir := camera.project_ray_normal(screen_pos)
+	if abs(dir.y) < 0.0001:
+		return Vector3.INF
+	var t := -origin.y / dir.y
+	if t <= 0.0:
+		return Vector3.INF
+	return origin + dir * t
+
+
+func _refresh_zone_preview() -> void:
+	if _zone_preview != null:
+		_zone_preview.queue_free()
+		_zone_preview = null
+	if _zone_vertices_world.size() < 2:
+		return
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_LINE_STRIP)
+	for p in _zone_vertices_world:
+		st.add_vertex(Vector3(p.x, 1.0, p.z))
+	if _zone_vertices_world.size() >= 3:
+		st.add_vertex(Vector3(_zone_vertices_world[0].x, 1.0, _zone_vertices_world[0].z))
+	var mesh: ArrayMesh = st.commit()
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.20, 0.85, 0.30, 1.0)
+	mat.emission_enabled = true
+	mat.emission = Color(0.20, 0.85, 0.30)
+	mat.emission_energy_multiplier = 0.7
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mi.material_override = mat
+	add_child(mi)
+	_zone_preview = mi
+
+
+func _finish_zone_drawing() -> void:
+	# Convertir vértices Vector3 a lon/lat vía CoordinateConverter.
+	var coords: Array = []
+	for p in _zone_vertices_world:
+		var gps: Vector2 = _converter.godot_to_gps(p)
+		coords.append([gps.x, gps.y])
+	_mode = Mode.DEFAULT
+	_zone_vertices_world.clear()
+	_refresh_zone_preview()
+	_hud.set_mode_hint("")
+	if coords.size() < 3:
+		return
+	_hud.open_zone_dialog(coords)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed:
+		var key := event as InputEventKey
+		if key.keycode == KEY_ESCAPE:
+			if _mode != Mode.DEFAULT:
+				_on_operator_mode_cancel()
+			elif _hud != null and _hud.is_reroute_mode():
+				_hud.cancel_reroute()
+		elif key.keycode == KEY_ENTER and _mode == Mode.ZONE_DRAWING:
+			_finish_zone_drawing()

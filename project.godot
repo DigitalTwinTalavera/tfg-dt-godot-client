@@ -29,6 +29,8 @@ SimulationClient="*res://scripts/autoload/simulation_client.gd"
 VehicleManager="*res://scripts/autoload/vehicle_manager.gd"
 SimulationStateManager="*res://scripts/autoload/simulation_state_manager.gd"
 TrafficLightManager="*res://scripts/autoload/traffic_light_manager.gd"
+IncidentManager="*res://scripts/autoload/incident_manager.gd"
+ZoneManager="*res://scripts/autoload/zone_manager.gd"
 
 [display]
 
