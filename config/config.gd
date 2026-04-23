@@ -151,13 +151,39 @@ class VehicleRendering:
 	const MATERIAL_ROUGHNESS: float = 0.4
 	const MATERIAL_METALLIC: float = 0.2
 	const RAYCAST_MAX_DISTANCE: float = 10000.0
-	## Interpolation — smooth movement between 10 Hz server ticks
-	const TICK_INTERVAL: float = 0.1       # Expected server tick period (s) at 10 Hz
+	## Interpolation — smooth movement between 10 Hz server ticks.
+	##
+	## Estrategia: snapshot interpolation con retraso de render.
+	##   • El cliente mantiene los dos últimos snapshots recibidos por vehículo.
+	##   • Cada frame calcula render_time = latest_server_sim_time - INTERPOLATION_DELAY
+	##     y dibuja la posición interpolada entre esos dos snapshots en ese instante.
+	##   • Como render_time siempre va detrás del último snapshot, la posición
+	##     dibujada se mueve entre puntos conocidos del servidor — nunca puede
+	##     retroceder aunque el servidor envíe ticks con retraso variable.
+	##   • MAX_DEAD_RECKONING se usa solo como red de seguridad si el servidor
+	##     deja de enviar ticks temporalmente (gap > INTERPOLATION_DELAY).
+	const TICK_INTERVAL: float = 0.2       # Expected server tick period (s) a 5 Hz (default backend)
+	const INTERPOLATION_DELAY: float = 0.2 # Render this many seconds "in the past" (s).
+	                                        # Debe igualar TICK_INTERVAL para que render_time cubra el
+	                                        # rango [snap_old_time, snap_new_time] exacto. A 5 Hz el
+	                                        # cliente va 200 ms por detrás del servidor — imperceptible
+	                                        # visualmente y dentro del presupuesto cómodo de jitter.
 	const SNAP_DISTANCE: float = 10.0      # Snap without lerp if error > this (metres)
 	const SNAP_HEADING_DEG: float = 45.0   # Snap without lerp if heading changes > this (degrees)
-	const MAX_DEAD_RECKONING: float = 0.3  # Cap dead-reckoning time (seconds)
-	## Suavizado de velocidad — evita que saltos bruscos de `v` en el tick generen
-	## tirones visibles durante la extrapolación. v_smooth = α·v_nuevo + (1-α)·v_ant.
+	const MAX_DEAD_RECKONING: float = 0.50 # Cap dead-reckoning time (seconds) — red de seguridad.
+	                                        # 500 ms absorbe los slow ticks ocasionales del backend con
+	                                        # 6000 vehículos (medido empíricamente: <1% ticks entre 430-500 ms
+	                                        # por spikes de física/MOBIL). A 50 km/h la extrapolación máxima
+	                                        # es ~7 m, por debajo de SNAP_DISTANCE (10 m) — no dispara snaps
+	                                        # falsos ni choques visuales con vehículos adyacentes.
+	## LOD por distancia a cámara para el detalle de ruedas + luces de freno.
+	## Más allá de esta distancia el slot se pliega a transforms degenerados (la
+	## GPU los descarta en setup de vértices) y el worker se ahorra ~80 writes
+	## + 4 llamadas a cos/sin por vehículo. A 300 m una rueda de 0.66 m de
+	## diámetro ocupa <1 px en 1080p con FOV 70°, así que visualmente es gratis.
+	const LOD_DETAIL_DISTANCE: float = 300.0
+	## Suavizado de velocidad — solo para tinting/animación de ruedas, ya no para
+	## extrapolar posición (la interpolación entre snapshots es ahora autoritativa).
 	const VELOCITY_EMA_ALPHA: float = 0.4
 	## Límite de velocidad angular de interpolación (rad/s). Evita giros instantáneos
 	## cuando el backend publica un cambio brusco de heading. 180°/s ≈ π.

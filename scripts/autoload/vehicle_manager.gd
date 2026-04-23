@@ -72,7 +72,7 @@ func get_all_vehicles() -> Dictionary:
 
 ## Handlers ----------------------------------------------------------------
 
-func _on_tick(_tick: int, _sim_time: float, vehicle_states: Array) -> void:
+func _on_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
 	var updated := 0
 	var new_batch: Array = []
 
@@ -83,10 +83,18 @@ func _on_tick(_tick: int, _sim_time: float, vehicle_states: Array) -> void:
 		if vid.is_empty():
 			continue
 
+		# Sella el snapshot con el sim_time del servidor. El renderer lo usa
+		# para la interpolación basada en reloj de servidor (sin depender del
+		# tiempo local de llegada del mensaje).
+		state["_sim_time"] = sim_time
+
 		if vehicles.has(vid):
-			# Delta update: merge changed fields into existing entry
+			# Delta update: merge changed fields into existing entry.
+			# NO emitimos `vehicle_updated` por vehículo — con 6000 vehículos
+			# son 60 000 signal dispatches/s que bloqueaban el main thread y
+			# provocaban frame drops visibles como tirones. El renderer
+			# consume el array entero en una sola llamada vía `tick_received`.
 			vehicles[vid].merge(state, true)
-			vehicle_updated.emit(vid, state)
 		else:
 			# New vehicle seen for the first time via tick
 			vehicles[vid] = state.duplicate()

@@ -52,14 +52,21 @@ var _active_count: int = 0
 # ── Per-slot interpolation state ─────────────────────────────────────────────
 ## All arrays are pre-allocated to MAX_VEHICLES in _build_multimesh().
 
-## World-space position at the *previous* tick (Y = CAR_ELEVATION)
-var _prev_pos: Array[Vector3] = []
-## World-space position from the *latest* tick
-var _target_pos: Array[Vector3] = []
-## Heading at the previous tick (radians, 0 = North)
-var _prev_heading: Array[float] = []
-## Heading from the latest tick (radians)
-var _target_heading: Array[float] = []
+## World-space position at the *previous* snapshot (Y = CAR_ELEVATION)
+var _snap_old_pos: Array[Vector3] = []
+## World-space position at the *latest* snapshot
+var _snap_new_pos: Array[Vector3] = []
+## Heading at the previous snapshot (radians, 0 = North)
+var _snap_old_heading: Array[float] = []
+## Heading at the latest snapshot (radians)
+var _snap_new_heading: Array[float] = []
+## Server sim_time (seconds) at each snapshot. Usados para la interpolación:
+## para el slot i, u = (render_time - snap_old_time) / (snap_new_time - snap_old_time),
+## con u clampeado a [0, 1]. Así el render depende del reloj del servidor (no
+## del reloj local de llegada del mensaje) y es imposible retroceder porque
+## render_time = latest_server_sim_time - INTERPOLATION_DELAY avanza monotónicamente.
+var _snap_old_time: PackedFloat32Array
+var _snap_new_time: PackedFloat32Array
 ## Velocidad suavizada (EMA) en m/s — usada para dead reckoning.
 ## La actualización se hace como v = α·v_nuevo + (1-α)·v_ant para evitar
 ## tirones visibles cuando el backend publica un salto brusco de velocidad.
@@ -97,22 +104,28 @@ var _wheel_sep_z: PackedFloat32Array
 ## Último status aplicado a cada slot (usado para no regenerar buffers de luces
 ## innecesariamente). La luz de freno cambia según status y aceleración.
 var _slot_status: Array[String] = []
-## Interpolation parameter.
-##   -1  → slot has never received position data (skip rendering)
-##    0  → just received a tick update (start of lerp)
-##    ≤1 → interpolating between prev and target
-##    >1 → dead reckoning beyond last known position
-## PackedFloat32Array (NOT Array[float]): memoria contigua sin mutex por elemento,
-## lo que permite que los worker threads escriban índices distintos de forma segura.
+## Flag de inicialización por slot.
+##   -1 → slot nunca ha recibido datos (saltar render)
+##   ≥0 → slot inicializado (el valor no se usa ya para interpolar)
+## Se mantiene como PackedFloat32Array por compatibilidad con el bucle de
+## workers (memoria contigua + escrituras por índice thread-safe).
 var _lerp_t: PackedFloat32Array
 
-# ── Parallel-update output buffers ───────────────────────────────────────────
-## Pre-allocated to MAX_VEHICLES. Worker threads write their slice by index;
-## the main thread reads after WorkerThreadPool.wait_for_group_task_completion.
-## PackedVector3Array / PackedFloat32Array use contiguous memory, so writing
-## different indices from different threads is safe without a mutex.
-var _out_pos:     PackedVector3Array   ## computed world-space positions
-var _out_heading: PackedFloat32Array   ## computed headings (radians)
+## Reloj de servidor: el último sim_time recibido desde el backend.
+## Se actualiza con cada mensaje `tick` de SimulationClient.
+var _latest_server_sim_time: float = -1.0
+
+## Reloj de render: sim_time al que el cliente dibuja actualmente.
+## Se mantiene en `_latest_server_sim_time - INTERPOLATION_DELAY`, avanzando
+## con delta local cada frame y re-ancla contra el reloj de servidor para
+## corregir drift. NUNCA retrocede: garantiza que la posición dibujada va
+## siempre entre dos snapshots reales, no por delante del servidor.
+var _render_sim_time: float = -1.0
+
+# ── Cached invariants (computados una vez en _ready) ────────────────────────
+## Inverso del radio de rueda — se multiplica por v·Δt para obtener el ángulo
+## de rodadura por frame. Cachearlo evita hacer la división en cada worker call.
+var _inv_wheel_r: float = 0.0
 
 # ── MultiMesh raw buffers ─────────────────────────────────────────────────────
 ## Layout per instance (TRANSFORM_3D + use_colors, use_custom_data=false):
@@ -133,6 +146,7 @@ var _brake_buffer: PackedFloat32Array
 # ── Lifecycle ────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
+	_inv_wheel_r = 1.0 / Config.VehicleRendering.WHEEL_RADIUS
 	_build_multimesh()
 	_connect_signals()
 	set_process_unhandled_input(true)
@@ -196,202 +210,230 @@ func _process(delta: float) -> void:
 	if _active_count == 0:
 		return
 
-	var tick_inv := Config.VehicleRendering.TICK_INTERVAL
-	var t_cap    := 1.0 + Config.VehicleRendering.MAX_DEAD_RECKONING / tick_inv
+	# ── Avance del reloj de render ────────────────────────────────────────────
+	# `render_sim_time` se mantiene a `latest_server_sim_time - INTERPOLATION_DELAY`
+	# avanzando con delta local para dar movimiento suave entre ticks, pero
+	# re-anclado al reloj del servidor para eliminar drift. Nunca retrocede.
+	if _latest_server_sim_time < 0.0:
+		return  # aún no hemos recibido ningún tick
+	if _render_sim_time < 0.0:
+		_render_sim_time = _latest_server_sim_time - Config.VehicleRendering.INTERPOLATION_DELAY
+	else:
+		_render_sim_time += delta
+		var target := _latest_server_sim_time - Config.VehicleRendering.INTERPOLATION_DELAY
+		var max_dr := Config.VehicleRendering.MAX_DEAD_RECKONING
+		# Tope superior: `snap_new_time` + MAX_DEAD_RECKONING. Así render_time
+		# puede recorrer el intervalo [t_old, t_new] completo (u = 0..1) por tick,
+		# más un margen de extrapolación si el siguiente llega tarde. Un tope en
+		# `target + max_dr` capaba u ≤ 0.5 → tirones de media-distancia cada 100 ms.
+		var upper_cap := _latest_server_sim_time + max_dr
+		if _render_sim_time > upper_cap:
+			_render_sim_time = upper_cap
+		# Si el reloj cliente se ha quedado muy atrás (pausa, lag), resync duro.
+		elif _render_sim_time < target - 0.5:
+			_render_sim_time = target
 
-	# ── 1. Compute interpolated positions/headings in parallel ────────────────
-	# _compute_vehicle_transform usa sólo PackedXxxArray y aritmética pura,
-	# por lo que es segura llamarla desde worker threads de Godot 4.
+	# ── Snapshot de la cámara para LOD ────────────────────────────────────────
+	# Leemos la posición de la cámara en el main thread (acceder a Camera3D
+	# desde un worker no es thread-safe). Si no hay cámara asignada usamos
+	# lod_dist_sq = INF → el check siempre falla → full detail para todos.
+	var cam_x := 0.0
+	var cam_z := 0.0
+	var lod_dist_sq := INF
+	if _camera:
+		var cam_pos := _camera.global_position
+		cam_x = cam_pos.x
+		cam_z = cam_pos.z
+		var d := Config.VehicleRendering.LOD_DETAIL_DISTANCE
+		lod_dist_sq = d * d
+
+	# ── Paralelización: una única group task hace TODO el trabajo por slot ───
+	# El WorkerThreadPool reparte los _active_count índices entre los N hilos
+	# disponibles (en esta máquina, 20). Cada worker lee sus snaps e índices
+	# disjuntos, interpola posición + heading, y escribe sus ~112 floats en
+	# los buffers MultiMesh (body+roof+4 ruedas+2 luces). Las escrituras son
+	# thread-safe porque cada slot ocupa un rango contiguo distinto dentro de
+	# los PackedFloat32Array; Godot garantiza memoria contigua sin COW en
+	# escrituras por índice.
+	#
+	# Coste esperado con 6000 vehículos / 20 cores: ~3 ms/thread secuencial
+	# era ~60 ms en el main thread → el loop antes triplicaba el presupuesto
+	# de frame (16.67 ms) y producía los tirones.
 	var gid := WorkerThreadPool.add_group_task(
-		_compute_vehicle_transform.bind(delta, tick_inv, t_cap),
+		_compute_and_write_slot.bind(_render_sim_time, delta, cam_x, cam_z, lod_dist_sq),
 		_active_count,
-		-1,   # -1 = usar todos los worker threads disponibles
-		true  # high_priority
+		-1,   # -1 = repartir entre todos los worker threads disponibles
+		true  # high priority
 	)
 	WorkerThreadPool.wait_for_group_task_completion(gid)
 
-	# ── 2. Escribir transforms en los buffers y subir de golpe a la GPU ───────
-	# Cada instancia ocupa 16 floats: 12 de Transform3D (row-major,
-	# origin interleaved at columns 3/7/11) + 4 de Color RGBA.
-	# Los colores (12-15) los escribe _update_slot por slot; aquí solo se
-	# reescriben los 12 del transform (0-11).
-	#
-	# La basis es R_y compass-heading (clockwise desde el norte visto desde
-	# arriba) con la escala aplicada POST-rotation (M · diag), para que el
-	# vehículo se estire en SU dirección local (no en los ejes del mundo).
-	var wheel_r   := Config.VehicleRendering.WHEEL_RADIUS
-	var inv_r     := 1.0 / wheel_r
-	var body_len  := Config.VehicleRendering.BODY_LENGTH
-	var body_h    := Config.VehicleRendering.BODY_HEIGHT
-	var body_w    := Config.VehicleRendering.BODY_WIDTH
-	for i in range(_active_count):
-		if _lerp_t[i] < 0.0:
-			continue
-		var pos     := _out_pos[i]
-		var heading := _out_heading[i]
-		var c       := cos(heading)
-		var s       := sin(heading)
-		var sx := _scale_x[i]
-		var sy := _scale_y[i]
-		var sz := _scale_z[i]
-		var rsx := _roof_scale_x[i]
-		var rsy := _roof_scale_y[i]
-		var rsz := _roof_scale_z[i]
-		var off := i * 16
-		# body — M · diag(sx, sy, sz); cada columna de M escala por su factor
-		_body_buffer[off +  0] =  c * sx; _body_buffer[off +  1] = 0.0; _body_buffer[off +  2] = -s * sz; _body_buffer[off +  3] = pos.x
-		_body_buffer[off +  4] = 0.0;     _body_buffer[off +  5] = sy;  _body_buffer[off +  6] = 0.0;     _body_buffer[off +  7] = pos.y + _body_y_off[i]
-		_body_buffer[off +  8] =  s * sx; _body_buffer[off +  9] = 0.0; _body_buffer[off + 10] =  c * sz; _body_buffer[off + 11] = pos.z
-		# roof
-		_roof_buffer[off +  0] =  c * rsx; _roof_buffer[off +  1] = 0.0; _roof_buffer[off +  2] = -s * rsz; _roof_buffer[off +  3] = pos.x
-		_roof_buffer[off +  4] = 0.0;      _roof_buffer[off +  5] = rsy; _roof_buffer[off +  6] = 0.0;      _roof_buffer[off +  7] = pos.y + _roof_y_off[i]
-		_roof_buffer[off +  8] =  s * rsx; _roof_buffer[off +  9] = 0.0; _roof_buffer[off + 10] =  c * rsz; _roof_buffer[off + 11] = pos.z
-
-		# ── Ruedas: 4 instancias por slot ───────────────────────────────────
-		# Acumula ángulo de rodadura (v/R · Δt). Modulo TAU para evitar drift
-		# de precisión float32 tras horas de simulación.
-		var wa := _wheel_angle[i] + _velocity[i] * delta * inv_r
-		if wa >= TAU or wa <= -TAU:
-			wa = fmod(wa, TAU)
-		_wheel_angle[i] = wa
-		var cw := cos(wa)
-		var sw := sin(wa)
-		# Basis = R_y_world(h) · R_z(-π/2) · R_y_mesh(w): tumba el cilindro
-		# (eje Y → eje X del vehículo) y lo hace rodar alrededor de ese eje.
-		# Filas de la matriz final (row-major):
-		var wr0_x := s * sw;   var wr0_y := c;    var wr0_z := -s * cw
-		var wr1_x := -cw;      var wr1_y := 0.0;  var wr1_z := -sw
-		var wr2_x := -c * sw;  var wr2_y := s;    var wr2_z := c * cw
-		var wy := pos.y + wheel_r  # centro de rueda sobre el suelo
-		var wsx := _wheel_sep_x[i]
-		var wsz := _wheel_sep_z[i]
-		var woff := i * 4 * 16
-		# 4 esquinas del vehículo: FR, FL, RR, RL
-		# origen_mundo = pos + R_y_world·(lx, 0, lz) = pos + (c·lx - s·lz, 0, s·lx + c·lz)
-		var c_wsx := c * wsx
-		var s_wsx := s * wsx
-		var c_wsz := c * wsz
-		var s_wsz := s * wsz
-		# FR (+wsx, -wsz)
-		_wheel_buffer[woff +  0] = wr0_x; _wheel_buffer[woff +  1] = wr0_y; _wheel_buffer[woff +  2] = wr0_z; _wheel_buffer[woff +  3] = pos.x + c_wsx + s_wsz
-		_wheel_buffer[woff +  4] = wr1_x; _wheel_buffer[woff +  5] = wr1_y; _wheel_buffer[woff +  6] = wr1_z; _wheel_buffer[woff +  7] = wy
-		_wheel_buffer[woff +  8] = wr2_x; _wheel_buffer[woff +  9] = wr2_y; _wheel_buffer[woff + 10] = wr2_z; _wheel_buffer[woff + 11] = pos.z + s_wsx - c_wsz
-		# FL (-wsx, -wsz)
-		_wheel_buffer[woff + 16] = wr0_x; _wheel_buffer[woff + 17] = wr0_y; _wheel_buffer[woff + 18] = wr0_z; _wheel_buffer[woff + 19] = pos.x - c_wsx + s_wsz
-		_wheel_buffer[woff + 20] = wr1_x; _wheel_buffer[woff + 21] = wr1_y; _wheel_buffer[woff + 22] = wr1_z; _wheel_buffer[woff + 23] = wy
-		_wheel_buffer[woff + 24] = wr2_x; _wheel_buffer[woff + 25] = wr2_y; _wheel_buffer[woff + 26] = wr2_z; _wheel_buffer[woff + 27] = pos.z - s_wsx - c_wsz
-		# RR (+wsx, +wsz)
-		_wheel_buffer[woff + 32] = wr0_x; _wheel_buffer[woff + 33] = wr0_y; _wheel_buffer[woff + 34] = wr0_z; _wheel_buffer[woff + 35] = pos.x + c_wsx - s_wsz
-		_wheel_buffer[woff + 36] = wr1_x; _wheel_buffer[woff + 37] = wr1_y; _wheel_buffer[woff + 38] = wr1_z; _wheel_buffer[woff + 39] = wy
-		_wheel_buffer[woff + 40] = wr2_x; _wheel_buffer[woff + 41] = wr2_y; _wheel_buffer[woff + 42] = wr2_z; _wheel_buffer[woff + 43] = pos.z + s_wsx + c_wsz
-		# RL (-wsx, +wsz)
-		_wheel_buffer[woff + 48] = wr0_x; _wheel_buffer[woff + 49] = wr0_y; _wheel_buffer[woff + 50] = wr0_z; _wheel_buffer[woff + 51] = pos.x - c_wsx - s_wsz
-		_wheel_buffer[woff + 52] = wr1_x; _wheel_buffer[woff + 53] = wr1_y; _wheel_buffer[woff + 54] = wr1_z; _wheel_buffer[woff + 55] = wy
-		_wheel_buffer[woff + 56] = wr2_x; _wheel_buffer[woff + 57] = wr2_y; _wheel_buffer[woff + 58] = wr2_z; _wheel_buffer[woff + 59] = pos.z - s_wsx + c_wsz
-
-		# ── Luces de freno: 2 instancias por slot (traseras) ─────────────────
-		# Posición en local: (±real_w·0.35, real_h·0.55, real_l·0.5 + 0.04)
-		# Rotación: sólo heading (sin spin ni tip).
-		var real_l := body_len * sz
-		var real_h := body_h   * sy
-		var real_w := body_w   * sx
-		var bl_lx := real_w * 0.35
-		var bl_ly := real_h * 0.55
-		var bl_lz := real_l * 0.5 + 0.04
-		var boff := i * 2 * 16
-		# BL-right (+bl_lx, +bl_lz) — atrás-derecha
-		_brake_buffer[boff +  0] = c;   _brake_buffer[boff +  1] = 0.0; _brake_buffer[boff +  2] = -s;  _brake_buffer[boff +  3] = pos.x + c * bl_lx - s * bl_lz
-		_brake_buffer[boff +  4] = 0.0; _brake_buffer[boff +  5] = 1.0; _brake_buffer[boff +  6] = 0.0; _brake_buffer[boff +  7] = pos.y + bl_ly
-		_brake_buffer[boff +  8] = s;   _brake_buffer[boff +  9] = 0.0; _brake_buffer[boff + 10] =  c;  _brake_buffer[boff + 11] = pos.z + s * bl_lx + c * bl_lz
-		# BL-left (-bl_lx, +bl_lz)
-		_brake_buffer[boff + 16] = c;   _brake_buffer[boff + 17] = 0.0; _brake_buffer[boff + 18] = -s;  _brake_buffer[boff + 19] = pos.x - c * bl_lx - s * bl_lz
-		_brake_buffer[boff + 20] = 0.0; _brake_buffer[boff + 21] = 1.0; _brake_buffer[boff + 22] = 0.0; _brake_buffer[boff + 23] = pos.y + bl_ly
-		_brake_buffer[boff + 24] = s;   _brake_buffer[boff + 25] = 0.0; _brake_buffer[boff + 26] =  c;  _brake_buffer[boff + 27] = pos.z - s * bl_lx + c * bl_lz
-
-	# Una sola subida de datos a la GPU por mesh (en lugar de N llamadas individuales)
+	# Upload de los 4 buffers a GPU en una sola llamada C++ por mesh.
 	_body_mmi.multimesh.buffer  = _body_buffer
 	_roof_mmi.multimesh.buffer  = _roof_buffer
 	_wheel_mmi.multimesh.buffer = _wheel_buffer
 	_brake_mmi.multimesh.buffer = _brake_buffer
 
 
-## Interpolated world position at parameter t for slot i.
-## Durante la extrapolación usamos cinemática uniforme con aceleración:
-##   d = v·Δt + ½·a·Δt²
-## Si el vehículo está frenando (a < 0), se limita Δt al tiempo hasta
-## detenerse (-v/a) para que la posición no retroceda físicamente.
-func _eval_pos(slot: int, t: float) -> Vector3:
-	if t <= 1.0:
-		return _prev_pos[slot].lerp(_target_pos[slot], t)
-	var overshoot := (t - 1.0) * Config.VehicleRendering.TICK_INTERVAL
-	var v := _velocity[slot]
-	var a := _acceleration[slot]
-	var dt := overshoot
-	if a < 0.0 and v > 0.0:
-		var t_stop := -v / a
-		if dt > t_stop:
-			dt = t_stop
-	var dist := v * dt + 0.5 * a * dt * dt
-	if dist < 0.0:
-		dist = 0.0
-	return _target_pos[slot] + \
-		Vector3(_forward_x[slot], 0.0, _forward_z[slot]) * dist
-
-
-## Interpolated heading (radians) at parameter t for slot i.
-func _eval_heading(slot: int, t: float) -> float:
-	if t <= 1.0:
-		return lerp_angle(_prev_heading[slot], _target_heading[slot], t)
-	return _target_heading[slot]  # Hold heading after dead reckoning
-
-
-## Worker-thread entry point — llamado por WorkerThreadPool.add_group_task().
-## Solo usa PackedXxxArray y aritmética pura (sin métodos de Node ni Array[T]).
-## Escribe el resultado en _out_pos[i] y _out_heading[i], que son PackedXxxArray
-## con memoria contigua: escrituras en índices distintos son thread-safe.
-func _compute_vehicle_transform(i: int, delta: float, tick_inv: float, t_cap: float) -> void:
+## Worker-thread entry point: hace TODO el trabajo por slot (interpolar +
+## construir basis + escribir buffers). Llamado por
+## WorkerThreadPool.add_group_task() con un índice distinto por thread.
+##
+## Thread-safety:
+##   - Escribe sólo a las posiciones (i*16..i*16+15) de _body_buffer/_roof_buffer,
+##     (i*64..i*64+63) de _wheel_buffer, (i*32..i*32+31) de _brake_buffer, y al
+##     índice i de _wheel_angle. Cada slot tiene un rango disjunto → seguro.
+##   - Lee snaps, velocidad, forward, scales, offsets: todos mutados sólo en
+##     el main thread vía _update_slot, que corre antes que _process en el
+##     mismo frame (handler síncrono de tick_received).
+##   - Config.VehicleRendering.* son constantes (seguro desde cualquier thread).
+##   - _camera NO se accede aquí: cam_x/cam_z/lod_dist_sq vienen bindeados.
+##
+## LOD: si dist_sq(pos, cam) > lod_dist_sq, escribe transforms degenerados
+## (todos ceros) para las 4 ruedas y las 2 luces de freno. La GPU los descarta
+## en setup de vértices (primitivas degeneradas) y nos ahorramos ~80 writes +
+## 4 cos/sin por vehículo lejano. Los colores (índices 12-15 de cada instancia)
+## los conserva _update_slot; aquí sólo tocamos los 12 floats de transform.
+func _compute_and_write_slot(
+	i: int,
+	render_time: float,
+	delta: float,
+	cam_x: float,
+	cam_z: float,
+	lod_dist_sq: float,
+) -> void:
 	if _lerp_t[i] < 0.0:
 		return
-	_lerp_t[i] = _lerp_t[i] + delta / tick_inv  # PackedFloat32Array: write is atomic per slot
-	var t := minf(_lerp_t[i], t_cap)
 
-	# ── Posición ──────────────────────────────────────────────────────────────
-	# Durante la extrapolación (t > 1) usamos cinemática uniforme:
-	#   d = v·Δt + ½·a·Δt²
-	# Si a < 0 y el vehículo se detendría antes del Δt completo, se limita Δt al
-	# tiempo hasta detenerse (-v/a) para no generar retrocesos irreales.
+	# ── (a) Interpolación de posición + heading ───────────────────────────────
+	var t_old := _snap_old_time[i]
+	var t_new := _snap_new_time[i]
+	var span := t_new - t_old
+
 	var pos: Vector3
-	if t <= 1.0:
-		pos = _prev_pos[i].lerp(_target_pos[i], t)
+	if span <= 1e-6:
+		pos = _snap_new_pos[i]
+	elif render_time <= t_old:
+		pos = _snap_old_pos[i]
+	elif render_time < t_new:
+		var u_p := (render_time - t_old) / span
+		pos = _snap_old_pos[i].lerp(_snap_new_pos[i], u_p)
 	else:
-		var overshoot := (t - 1.0) * Config.VehicleRendering.TICK_INTERVAL
+		# Red de seguridad: render_time pasó snap_new. Extrapolación corta
+		# usando velocidad × forward, capada a MAX_DEAD_RECKONING.
+		var overshoot := render_time - t_new
+		if overshoot > Config.VehicleRendering.MAX_DEAD_RECKONING:
+			overshoot = Config.VehicleRendering.MAX_DEAD_RECKONING
 		var v := _velocity[i]
-		var a := _acceleration[i]
-		var dt := overshoot
-		if a < 0.0 and v > 0.0:
-			var t_stop := -v / a
-			if dt > t_stop:
-				dt = t_stop
-		var dist := v * dt + 0.5 * a * dt * dt
-		if dist < 0.0:
-			dist = 0.0
-		pos = _target_pos[i] + Vector3(_forward_x[i], 0.0, _forward_z[i]) * dist
-	_out_pos[i] = pos
+		if v > 0.0 and overshoot > 0.0:
+			pos = _snap_new_pos[i] + \
+				Vector3(_forward_x[i], 0.0, _forward_z[i]) * v * overshoot
+		else:
+			pos = _snap_new_pos[i]
 
-	# ── Heading ───────────────────────────────────────────────────────────────
-	# Se limita la velocidad angular a MAX_YAW_RATE_RAD_S: si el backend publica
-	# un giro mayor del que físicamente podría darse en un tick, clampamos la
-	# diferencia y el giro se completa a lo largo de varios ticks de forma suave.
-	if t <= 1.0:
-		var from_h := _prev_heading[i]
-		var to_h   := _target_heading[i]
+	var heading: float
+	if span <= 1e-6 or render_time >= t_new:
+		heading = _snap_new_heading[i]
+	elif render_time <= t_old:
+		heading = _snap_old_heading[i]
+	else:
+		var from_h := _snap_old_heading[i]
+		var to_h   := _snap_new_heading[i]
 		var diff   := fmod(to_h - from_h + TAU + PI, TAU) - PI  # normalise a [-π, π]
-		var cap := Config.VehicleRendering.MAX_YAW_RATE_RAD_S * Config.VehicleRendering.TICK_INTERVAL
+		var cap := Config.VehicleRendering.MAX_YAW_RATE_RAD_S * span
 		if diff >  cap: diff =  cap
 		elif diff < -cap: diff = -cap
-		_out_heading[i] = from_h + diff * t
-	else:
-		_out_heading[i] = _target_heading[i]
+		var u_h := (render_time - t_old) / span
+		heading = from_h + diff * u_h
+
+	# ── (b) Body + roof transforms (siempre, no dependen de LOD) ──────────────
+	var c := cos(heading)
+	var s := sin(heading)
+	var sx := _scale_x[i]; var sy := _scale_y[i]; var sz := _scale_z[i]
+	var rsx := _roof_scale_x[i]; var rsy := _roof_scale_y[i]; var rsz := _roof_scale_z[i]
+	var off := i * 16
+	# body — basis = R_y(heading) con escala por columna; origen en pos
+	_body_buffer[off +  0] =  c * sx; _body_buffer[off +  1] = 0.0; _body_buffer[off +  2] = -s * sz; _body_buffer[off +  3] = pos.x
+	_body_buffer[off +  4] = 0.0;     _body_buffer[off +  5] = sy;  _body_buffer[off +  6] = 0.0;     _body_buffer[off +  7] = pos.y + _body_y_off[i]
+	_body_buffer[off +  8] =  s * sx; _body_buffer[off +  9] = 0.0; _body_buffer[off + 10] =  c * sz; _body_buffer[off + 11] = pos.z
+	# roof
+	_roof_buffer[off +  0] =  c * rsx; _roof_buffer[off +  1] = 0.0; _roof_buffer[off +  2] = -s * rsz; _roof_buffer[off +  3] = pos.x
+	_roof_buffer[off +  4] = 0.0;      _roof_buffer[off +  5] = rsy; _roof_buffer[off +  6] = 0.0;      _roof_buffer[off +  7] = pos.y + _roof_y_off[i]
+	_roof_buffer[off +  8] =  s * rsx; _roof_buffer[off +  9] = 0.0; _roof_buffer[off + 10] =  c * rsz; _roof_buffer[off + 11] = pos.z
+
+	var woff := i * 4 * 16
+	var boff := i * 2 * 16
+
+	# ── (c) LOD: lejos de cámara → transforms degenerados para ruedas + luces ─
+	var dx := pos.x - cam_x
+	var dz := pos.z - cam_z
+	if dx * dx + dz * dz > lod_dist_sq:
+		# Zero-out sólo los 12 floats de transform de cada instancia; los 4 de
+		# color (12-15) los preserva _update_slot y valen cuando el slot vuelve
+		# a entrar en near-LOD.
+		for wk in range(4):
+			var o := woff + wk * 16
+			_wheel_buffer[o +  0] = 0.0; _wheel_buffer[o +  1] = 0.0; _wheel_buffer[o +  2] = 0.0; _wheel_buffer[o +  3] = 0.0
+			_wheel_buffer[o +  4] = 0.0; _wheel_buffer[o +  5] = 0.0; _wheel_buffer[o +  6] = 0.0; _wheel_buffer[o +  7] = 0.0
+			_wheel_buffer[o +  8] = 0.0; _wheel_buffer[o +  9] = 0.0; _wheel_buffer[o + 10] = 0.0; _wheel_buffer[o + 11] = 0.0
+		for bk in range(2):
+			var ob := boff + bk * 16
+			_brake_buffer[ob +  0] = 0.0; _brake_buffer[ob +  1] = 0.0; _brake_buffer[ob +  2] = 0.0; _brake_buffer[ob +  3] = 0.0
+			_brake_buffer[ob +  4] = 0.0; _brake_buffer[ob +  5] = 0.0; _brake_buffer[ob +  6] = 0.0; _brake_buffer[ob +  7] = 0.0
+			_brake_buffer[ob +  8] = 0.0; _brake_buffer[ob +  9] = 0.0; _brake_buffer[ob + 10] = 0.0; _brake_buffer[ob + 11] = 0.0
+		return
+
+	# ── (d) Near-LOD: ruedas con rodadura + luces de freno ───────────────────
+	# Ángulo de rodadura acumulado (v/R · Δt). Modulo TAU para evitar drift
+	# de precisión float32 tras horas de simulación.
+	var wa := _wheel_angle[i] + _velocity[i] * delta * _inv_wheel_r
+	if wa >= TAU or wa <= -TAU:
+		wa = fmod(wa, TAU)
+	_wheel_angle[i] = wa
+	var cw := cos(wa)
+	var sw := sin(wa)
+	# Basis = R_y_world(h) · R_z(-π/2) · R_y_mesh(w): tumba el cilindro
+	# (eje Y → eje X del vehículo) y lo hace rodar alrededor de ese eje.
+	var wr0_x := s * sw;   var wr0_y := c;    var wr0_z := -s * cw
+	var wr1_x := -cw;      var wr1_y := 0.0;  var wr1_z := -sw
+	var wr2_x := -c * sw;  var wr2_y := s;    var wr2_z := c * cw
+	var wheel_r := Config.VehicleRendering.WHEEL_RADIUS
+	var wy := pos.y + wheel_r  # centro de rueda sobre el suelo
+	var wsx := _wheel_sep_x[i]
+	var wsz := _wheel_sep_z[i]
+	var c_wsx := c * wsx; var s_wsx := s * wsx
+	var c_wsz := c * wsz; var s_wsz := s * wsz
+	# FR (+wsx, -wsz)
+	_wheel_buffer[woff +  0] = wr0_x; _wheel_buffer[woff +  1] = wr0_y; _wheel_buffer[woff +  2] = wr0_z; _wheel_buffer[woff +  3] = pos.x + c_wsx + s_wsz
+	_wheel_buffer[woff +  4] = wr1_x; _wheel_buffer[woff +  5] = wr1_y; _wheel_buffer[woff +  6] = wr1_z; _wheel_buffer[woff +  7] = wy
+	_wheel_buffer[woff +  8] = wr2_x; _wheel_buffer[woff +  9] = wr2_y; _wheel_buffer[woff + 10] = wr2_z; _wheel_buffer[woff + 11] = pos.z + s_wsx - c_wsz
+	# FL (-wsx, -wsz)
+	_wheel_buffer[woff + 16] = wr0_x; _wheel_buffer[woff + 17] = wr0_y; _wheel_buffer[woff + 18] = wr0_z; _wheel_buffer[woff + 19] = pos.x - c_wsx + s_wsz
+	_wheel_buffer[woff + 20] = wr1_x; _wheel_buffer[woff + 21] = wr1_y; _wheel_buffer[woff + 22] = wr1_z; _wheel_buffer[woff + 23] = wy
+	_wheel_buffer[woff + 24] = wr2_x; _wheel_buffer[woff + 25] = wr2_y; _wheel_buffer[woff + 26] = wr2_z; _wheel_buffer[woff + 27] = pos.z - s_wsx - c_wsz
+	# RR (+wsx, +wsz)
+	_wheel_buffer[woff + 32] = wr0_x; _wheel_buffer[woff + 33] = wr0_y; _wheel_buffer[woff + 34] = wr0_z; _wheel_buffer[woff + 35] = pos.x + c_wsx - s_wsz
+	_wheel_buffer[woff + 36] = wr1_x; _wheel_buffer[woff + 37] = wr1_y; _wheel_buffer[woff + 38] = wr1_z; _wheel_buffer[woff + 39] = wy
+	_wheel_buffer[woff + 40] = wr2_x; _wheel_buffer[woff + 41] = wr2_y; _wheel_buffer[woff + 42] = wr2_z; _wheel_buffer[woff + 43] = pos.z + s_wsx + c_wsz
+	# RL (-wsx, +wsz)
+	_wheel_buffer[woff + 48] = wr0_x; _wheel_buffer[woff + 49] = wr0_y; _wheel_buffer[woff + 50] = wr0_z; _wheel_buffer[woff + 51] = pos.x - c_wsx - s_wsz
+	_wheel_buffer[woff + 52] = wr1_x; _wheel_buffer[woff + 53] = wr1_y; _wheel_buffer[woff + 54] = wr1_z; _wheel_buffer[woff + 55] = wy
+	_wheel_buffer[woff + 56] = wr2_x; _wheel_buffer[woff + 57] = wr2_y; _wheel_buffer[woff + 58] = wr2_z; _wheel_buffer[woff + 59] = pos.z - s_wsx + c_wsz
+
+	# Luces de freno: 2 instancias traseras. Pos local: (±real_w·0.35, real_h·0.55, real_l·0.5 + 0.04)
+	var real_l := Config.VehicleRendering.BODY_LENGTH * sz
+	var real_h := Config.VehicleRendering.BODY_HEIGHT * sy
+	var real_w := Config.VehicleRendering.BODY_WIDTH * sx
+	var bl_lx := real_w * 0.35
+	var bl_ly := real_h * 0.55
+	var bl_lz := real_l * 0.5 + 0.04
+	# BL-right (+bl_lx, +bl_lz)
+	_brake_buffer[boff +  0] = c;   _brake_buffer[boff +  1] = 0.0; _brake_buffer[boff +  2] = -s;  _brake_buffer[boff +  3] = pos.x + c * bl_lx - s * bl_lz
+	_brake_buffer[boff +  4] = 0.0; _brake_buffer[boff +  5] = 1.0; _brake_buffer[boff +  6] = 0.0; _brake_buffer[boff +  7] = pos.y + bl_ly
+	_brake_buffer[boff +  8] = s;   _brake_buffer[boff +  9] = 0.0; _brake_buffer[boff + 10] =  c;  _brake_buffer[boff + 11] = pos.z + s * bl_lx + c * bl_lz
+	# BL-left (-bl_lx, +bl_lz)
+	_brake_buffer[boff + 16] = c;   _brake_buffer[boff + 17] = 0.0; _brake_buffer[boff + 18] = -s;  _brake_buffer[boff + 19] = pos.x - c * bl_lx - s * bl_lz
+	_brake_buffer[boff + 20] = 0.0; _brake_buffer[boff + 21] = 1.0; _brake_buffer[boff + 22] = 0.0; _brake_buffer[boff + 23] = pos.y + bl_ly
+	_brake_buffer[boff + 24] = s;   _brake_buffer[boff + 25] = 0.0; _brake_buffer[boff + 26] =  c;  _brake_buffer[boff + 27] = pos.z - s * bl_lx + c * bl_lz
 
 
 # ── Input ────────────────────────────────────────────────────────────────────
@@ -414,10 +456,12 @@ func _build_multimesh() -> void:
 	var max_v := Config.VehicleRendering.MAX_VEHICLES
 
 	_slot_to_id.resize(max_v);    _slot_to_id.fill("")
-	_prev_pos.resize(max_v);      _prev_pos.fill(Vector3.ZERO)
-	_target_pos.resize(max_v);    _target_pos.fill(Vector3.ZERO)
-	_prev_heading.resize(max_v);  _prev_heading.fill(0.0)
-	_target_heading.resize(max_v);_target_heading.fill(0.0)
+	_snap_old_pos.resize(max_v);      _snap_old_pos.fill(Vector3.ZERO)
+	_snap_new_pos.resize(max_v);    _snap_new_pos.fill(Vector3.ZERO)
+	_snap_old_heading.resize(max_v);  _snap_old_heading.fill(0.0)
+	_snap_new_heading.resize(max_v);_snap_new_heading.fill(0.0)
+	_snap_old_time.resize(max_v); _snap_old_time.fill(0.0)
+	_snap_new_time.resize(max_v); _snap_new_time.fill(0.0)
 	_velocity.resize(max_v);      _velocity.fill(0.0)
 	_acceleration.resize(max_v);  _acceleration.fill(0.0)
 	_forward_x.resize(max_v);     _forward_x.fill(0.0)
@@ -440,10 +484,6 @@ func _build_multimesh() -> void:
 	_wheel_angle.resize(max_v);   _wheel_angle.fill(0.0)
 	_wheel_sep_x.resize(max_v);   _wheel_sep_x.fill(Config.VehicleRendering.VehicleSize.CAR_WIDTH * 0.5)
 	_wheel_sep_z.resize(max_v);   _wheel_sep_z.fill(Config.VehicleRendering.VehicleSize.CAR_LENGTH * 0.35)
-
-	# Parallel-update output arrays
-	_out_pos.resize(max_v)
-	_out_heading.resize(max_v)
 
 	# Raw MultiMesh buffers: 16 floats per instance (12 transform + 4 color)
 	_body_buffer.resize(max_v * 16)
@@ -597,9 +637,36 @@ func _make_mmi_from_mesh(
 func _connect_signals() -> void:
 	VehicleManager.vehicle_added.connect(_on_vehicle_added)
 	VehicleManager.vehicles_batch_added.connect(_on_vehicles_batch_added)
-	VehicleManager.vehicle_updated.connect(_on_vehicle_updated)
 	VehicleManager.vehicle_removed.connect(_on_vehicle_removed)
 	SimulationClient.connected.connect(_on_ws_connected)
+	# Consumimos el tick directamente de SimulationClient en lugar de recibir
+	# un `vehicle_updated` por vehículo desde VehicleManager. Con 6000 vehículos
+	# los 60 000 signal dispatches/s bloqueaban el main thread y provocaban
+	# tirones. Aquí iteramos el array completo una sola vez por tick.
+	SimulationClient.tick_received.connect(_on_server_tick)
+
+
+func _on_server_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
+	if sim_time > _latest_server_sim_time:
+		_latest_server_sim_time = sim_time
+
+	# Batch update: una única pasada por todos los vehículos activos del tick.
+	# Saltamos los que aún no tienen slot asignado — vehicles_batch_added los
+	# registrará antes que vehicle_updated en la siguiente secuencia de señales.
+	for state in vehicle_states:
+		if not state is Dictionary:
+			continue
+		var vid: String = state.get("id", "")
+		if vid.is_empty():
+			continue
+		var slot_val = _id_to_slot.get(vid, -1)
+		if slot_val == -1:
+			continue
+		# Sella el sim_time del tick (VehicleManager también lo hace en su dict
+		# para UI queries, pero nosotros trabajamos con la copia del array).
+		if not state.has("_sim_time"):
+			state["_sim_time"] = sim_time
+		_update_slot(int(slot_val), state)
 
 
 # ── Slot management ──────────────────────────────────────────────────────────
@@ -646,12 +713,6 @@ func _on_vehicles_batch_added(batch: Array) -> void:
 	_set_visible_count(_active_count)
 
 
-func _on_vehicle_updated(vehicle_id: String, state: Dictionary) -> void:
-	if not _id_to_slot.has(vehicle_id):
-		return
-	_update_slot(_id_to_slot[vehicle_id], state)
-
-
 func _on_vehicle_removed(vehicle_id: String) -> void:
 	if not _id_to_slot.has(vehicle_id):
 		return
@@ -673,10 +734,12 @@ func _on_vehicle_removed(vehicle_id: String) -> void:
 
 ## Copy all per-slot state from slot src to slot dst.
 func _copy_slot_state(src: int, dst: int) -> void:
-	_prev_pos[dst]      = _prev_pos[src]
-	_target_pos[dst]    = _target_pos[src]
-	_prev_heading[dst]  = _prev_heading[src]
-	_target_heading[dst]= _target_heading[src]
+	_snap_old_pos[dst]      = _snap_old_pos[src]
+	_snap_new_pos[dst]    = _snap_new_pos[src]
+	_snap_old_heading[dst]  = _snap_old_heading[src]
+	_snap_new_heading[dst]= _snap_new_heading[src]
+	_snap_old_time[dst]   = _snap_old_time[src]
+	_snap_new_time[dst]   = _snap_new_time[src]
 	_velocity[dst]      = _velocity[src]
 	_acceleration[dst]  = _acceleration[src]
 	_forward_x[dst]     = _forward_x[src]
@@ -728,6 +791,8 @@ func _on_ws_connected() -> void:
 	_id_to_slot.clear()
 	_slot_to_id.fill("")
 	_lerp_t.fill(-1.0)
+	_snap_old_time.fill(0.0)
+	_snap_new_time.fill(0.0)
 	_body_buffer.fill(0.0)
 	_roof_buffer.fill(0.0)
 	_wheel_buffer.fill(0.0)
@@ -735,6 +800,8 @@ func _on_ws_connected() -> void:
 	_wheel_angle.fill(0.0)
 	_slot_vtype.fill("")
 	_slot_status.fill("")
+	_latest_server_sim_time = -1.0
+	_render_sim_time = -1.0
 	_set_visible_count(0)
 	_log_info("Reset on WebSocket connect")
 
@@ -762,6 +829,16 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 	var status     : String = state.get("status", "idle")
 	var vtype      : String = state.get("vtype",  "car")
 	var lane       : int    = int(state.get("lane", 0))
+	# Sim-time del snapshot (sellado por VehicleManager con el tick sim_time).
+	# Si el estado viene de una ruta antigua (spawn message individual sin sim_time)
+	# usamos el último reloj de servidor conocido.
+	var sim_time   : float  = float(state.get("_sim_time", _latest_server_sim_time))
+	if sim_time < 0.0:
+		sim_time = 0.0
+	# Mantener el reloj de servidor al día incluso si el handler de
+	# SimulationClient.tick_received aún no se ha ejecutado este frame.
+	if sim_time > _latest_server_sim_time:
+		_latest_server_sim_time = sim_time
 
 	# Aplicar las dimensiones del tipo de vehículo al slot (actualiza sólo
 	# cuando el valor cambia realmente para evitar trabajo innecesario).
@@ -778,44 +855,58 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 	new_pos.z += sin(new_heading) * lane_off
 
 	if _lerp_t[slot] < 0.0:
-		# ── First update for this slot: snap directly to position ──────────
-		_prev_pos[slot]      = new_pos
-		_prev_heading[slot]  = new_heading
-		_lerp_t[slot]        = 1.0  # Render at target immediately
-		# Sin histórico previo → inicializamos velocidad/aceleración directamente
-		# (la EMA arranca en este valor y converge en ticks posteriores).
-		_velocity[slot]      = speed
-		_acceleration[slot]  = accel
+		# ── First snapshot for this slot ─────────────────────────────────────
+		# Inicializamos ambos snapshots al mismo punto con una separación
+		# artificial de TICK_INTERVAL: así la interpolación arranca con u=1
+		# (posición estable) hasta que llegue el siguiente snapshot real.
+		_snap_old_pos[slot]     = new_pos
+		_snap_new_pos[slot]     = new_pos
+		_snap_old_heading[slot] = new_heading
+		_snap_new_heading[slot] = new_heading
+		_snap_old_time[slot]    = sim_time - Config.VehicleRendering.TICK_INTERVAL
+		_snap_new_time[slot]    = sim_time
+		_lerp_t[slot]           = 0.0  # initialised flag
+		_velocity[slot]         = speed
+		_acceleration[slot]     = accel
 		_log_debug("Slot %d initialised at (%.1f, %.1f, %.1f)" % [slot, new_pos.x, new_pos.y, new_pos.z])
 	else:
-		# ── Subsequent update: compute where the vehicle currently is ──────
-		var t_now          := minf(_lerp_t[slot],
-								   1.0 + Config.VehicleRendering.MAX_DEAD_RECKONING /
-										 Config.VehicleRendering.TICK_INTERVAL)
-		var current_pos    := _eval_pos(slot, t_now)
-		var current_heading := _eval_heading(slot, t_now)
-		var error          := current_pos.distance_to(new_pos)
+		# ── Rotación de snapshots ────────────────────────────────────────────
+		# Descarta mensajes fuera de orden (el servidor usa TCP, así que esto
+		# sólo pasa si el cliente re-ordenó o recibió un chunk muy retrasado).
+		if sim_time <= _snap_new_time[slot]:
+			return
 
-		var heading_change_deg := rad_to_deg(absf(angle_difference(current_heading, new_heading)))
+		# Detección de teletransporte: si el salto es demasiado grande para
+		# interpolar razonablemente, colapsamos los snapshots al punto nuevo.
+		var error := _snap_new_pos[slot].distance_to(new_pos)
+		var heading_change_deg := rad_to_deg(absf(
+			angle_difference(_snap_new_heading[slot], new_heading)
+		))
 		var should_snap := error > Config.VehicleRendering.SNAP_DISTANCE or \
 						   heading_change_deg > Config.VehicleRendering.SNAP_HEADING_DEG
 		if should_snap:
-			# Large discontinuity or sharp turn: snap to avoid lerping off-road
-			_prev_pos[slot]     = new_pos
-			_prev_heading[slot] = new_heading
-			_lerp_t[slot]       = 1.0
+			_snap_old_pos[slot]     = new_pos
+			_snap_new_pos[slot]     = new_pos
+			_snap_old_heading[slot] = new_heading
+			_snap_new_heading[slot] = new_heading
+			_snap_old_time[slot]    = sim_time - Config.VehicleRendering.TICK_INTERVAL
+			_snap_new_time[slot]    = sim_time
 			_log_debug("Snap on slot %d (error %.1f m, heading %.1f°)" % [slot, error, heading_change_deg])
 		else:
-			# Normal update: lerp from current rendered position to new target
-			_prev_pos[slot]     = current_pos
-			_prev_heading[slot] = current_heading
-			_lerp_t[slot]       = 0.0
+			# Rotación normal: el snapshot "nuevo" pasa a ser "viejo" y el
+			# entrante pasa a ser "nuevo". El render_time seguirá avanzando
+			# a través del nuevo intervalo [old, new].
+			_snap_old_pos[slot]     = _snap_new_pos[slot]
+			_snap_old_heading[slot] = _snap_new_heading[slot]
+			_snap_old_time[slot]    = _snap_new_time[slot]
+			_snap_new_pos[slot]     = new_pos
+			_snap_new_heading[slot] = new_heading
+			_snap_new_time[slot]    = sim_time
 
-	# Always update target and kinematics
-	_target_pos[slot]      = new_pos
-	_target_heading[slot]  = new_heading
-	# EMA: v = α·v_nuevo + (1-α)·v_ant. Suaviza saltos del backend sin añadir
-	# retraso perceptible. La aceleración usa la misma α por simplicidad.
+	# EMA de velocidad / aceleración — usadas para:
+	#   (1) animación de rodadura de las ruedas en _process,
+	#   (2) encendido de luces de freno,
+	#   (3) extrapolación de emergencia si el servidor deja de enviar ticks.
 	var alpha := Config.VehicleRendering.VELOCITY_EMA_ALPHA
 	var inv_a := 1.0 - alpha
 	_velocity[slot]        = alpha * speed + inv_a * _velocity[slot]

@@ -66,6 +66,18 @@ var _reconnect_timer: Timer
 ## Message queue (bounded ring-buffer behaviour)
 var _message_queue: Array[Dictionary] = []
 
+## Re-ensamblaje de ticks multi-chunk.
+## Cuando el backend divide un tick en N mensajes (chunk_total > 1), el cliente
+## acumula los vehículos de cada fragmento en `_pending_tick_vehicles` y solo
+## emite `tick_received` una vez que han llegado todos los chunks del mismo
+## tick. Esto evita que el renderer aplique un estado parcial (unos vehículos
+## del tick N, otros del N-1), que antes producía jitter visible.
+var _pending_tick: int = -1
+var _pending_sim_time: float = 0.0
+var _pending_tick_vehicles: Array = []
+var _pending_chunks_received: int = 0
+var _pending_chunks_total: int = 0
+
 ## Stats
 var _ticks_received: int = 0
 var _messages_processed: int = 0
@@ -253,7 +265,36 @@ func _handle_tick(msg: Dictionary) -> void:
 	var tick := JsonUtils.get_int(msg, "tick", 0)
 	var sim_time := JsonUtils.get_float(msg, "sim_time", 0.0)
 	var vehicles := JsonUtils.get_array(msg, "vehicles", [])
+	var chunk_index := JsonUtils.get_int(msg, "chunk_index", 0)
+	var chunk_total := JsonUtils.get_int(msg, "chunk_total", 1)
 
+	# Caso frecuente: tick en un solo fragmento — emitir directamente.
+	if chunk_total <= 1:
+		_flush_pending_if_any()
+		_emit_tick(tick, sim_time, vehicles)
+		return
+
+	# Si llega el primer chunk de un tick nuevo mientras aún hay uno pendiente,
+	# significa que perdimos algún fragmento del anterior; flusheamos lo
+	# parcial y arrancamos el nuevo ensamblaje.
+	if _pending_tick != tick:
+		_flush_pending_if_any()
+		_pending_tick = tick
+		_pending_sim_time = sim_time
+		_pending_tick_vehicles = []
+		_pending_chunks_received = 0
+		_pending_chunks_total = chunk_total
+
+	_pending_tick_vehicles.append_array(vehicles)
+	_pending_chunks_received += 1
+
+	# Tick completo: emitir como una única actualización atómica.
+	if _pending_chunks_received >= _pending_chunks_total:
+		_emit_tick(_pending_tick, _pending_sim_time, _pending_tick_vehicles)
+		_reset_pending_tick()
+
+
+func _emit_tick(tick: int, sim_time: float, vehicles: Array) -> void:
 	# Rolling tick-rate estimate
 	var now := Time.get_ticks_msec() / 1000.0
 	if _ticks_received > 0 and _last_tick_time > 0.0:
@@ -266,6 +307,29 @@ func _handle_tick(msg: Dictionary) -> void:
 	tick_received.emit(tick, sim_time, vehicles)
 
 
+func _flush_pending_if_any() -> void:
+	if _pending_tick < 0:
+		return
+	if _pending_tick_vehicles.size() > 0:
+		_log_warning(
+			"Tick %d incompleto: %d/%d chunks — emitiendo parcial" % [
+				_pending_tick,
+				_pending_chunks_received,
+				_pending_chunks_total,
+			]
+		)
+		_emit_tick(_pending_tick, _pending_sim_time, _pending_tick_vehicles)
+	_reset_pending_tick()
+
+
+func _reset_pending_tick() -> void:
+	_pending_tick = -1
+	_pending_sim_time = 0.0
+	_pending_tick_vehicles = []
+	_pending_chunks_received = 0
+	_pending_chunks_total = 0
+
+
 ## Internal: connection events ---------------------------------------------
 
 func _on_ws_opened() -> void:
@@ -275,6 +339,7 @@ func _on_ws_opened() -> void:
 	_messages_processed = 0
 	_measured_tick_rate = 0.0
 	_message_queue.clear()
+	_reset_pending_tick()
 	_log_info("WebSocket connected to %s" % Config.ws_url)
 	connected.emit()
 
