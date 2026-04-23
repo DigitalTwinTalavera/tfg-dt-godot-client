@@ -738,13 +738,27 @@ func _build_tab_collisions() -> VBoxContainer:
 	_coll_summary_lbl.add_theme_color_override("font_color", Config.UI.TEXT_COLOR)
 	outer.add_child(_coll_summary_lbl)
 
+	var btn_row := HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", 4)
+	btn_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
 	var refresh_btn := _make_btn(
 		"🔄 Refrescar",
 		"Consulta el endpoint GET /simulation/collisions para resincronizar la lista",
 	)
 	refresh_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	refresh_btn.pressed.connect(_refresh_collisions)
-	outer.add_child(refresh_btn)
+	btn_row.add_child(refresh_btn)
+
+	var clear_all_btn := _make_btn(
+		"🧹 Limpiar todas",
+		"POST /simulation/collisions/clear-all — retira todos los vehículos colisionados",
+	)
+	clear_all_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	clear_all_btn.pressed.connect(_clear_all_collisions)
+	btn_row.add_child(clear_all_btn)
+
+	outer.add_child(btn_row)
 
 	outer.add_child(HSeparator.new())
 
@@ -1417,6 +1431,17 @@ func _clear_collision(vehicle_id: String) -> void:
 	# Optimistic removal — if the call fails (e.g. the backend already cleared
 	# it) we'll resync on the next vehicle_finished broadcast.
 	_on_collision_cleared(vehicle_id)
+
+
+func _clear_all_collisions() -> void:
+	# Snapshot de ids antes del await: el broadcast vehicle_finished irá
+	# llegando y mutando _collisions mientras esperamos la respuesta.
+	var ids: Array = _collisions.keys().duplicate()
+	var _r: HTTPResult = await _http.post_request(
+		"/simulation/collisions/clear-all", {}
+	)
+	for vid in ids:
+		_on_collision_cleared(vid)
 
 
 func _refresh_collision_summary() -> void:

@@ -242,6 +242,8 @@ func _render_nodes_internal(nodes: Array[NodeData], network: RoadNetwork) -> voi
 		var t := Transform3D(); t.origin = godot_pos
 		_multi_mesh_instance.multimesh.set_instance_transform(i, t)
 		_multi_mesh_instance.multimesh.set_instance_color(i, _get_node_color(node.node_type))
+		
+		
 
 	# ── Populate traffic-light mesh (una instancia por arista) ─────────────────
 	_tl_multi_mesh_instance.multimesh.instance_count = _tl_count
