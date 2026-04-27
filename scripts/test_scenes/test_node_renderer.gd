@@ -18,8 +18,18 @@ var _zone_renderer: ZoneRenderer
 var _route_renderer: RouteRenderer
 
 ## Estado de modos de operador: creación de incidente (seleccionar arista por
-## clicks sucesivos en 2 nodos) y dibujo de zona (polígono por clicks).
-enum Mode { DEFAULT, INCIDENT_PICK_START, INCIDENT_PICK_END, ZONE_DRAWING }
+## clicks sucesivos en 2 nodos), dibujo de zona (polígono por clicks), y
+## cierre/reapertura rápida de tramos por clic directo sobre la calle (pensado
+## para la demo: durante la presentación los nodos están ocultos, así que la
+## selección por nodos no es viable y se sustituye por picking de edge).
+enum Mode {
+	DEFAULT,
+	INCIDENT_PICK_START,
+	INCIDENT_PICK_END,
+	ZONE_DRAWING,
+	LANE_CLOSE_PICK,
+	LANE_OPEN_PICK,
+}
 var _mode: int = Mode.DEFAULT
 var _incident_first_node: int = -1
 var _zone_vertices_world: PackedVector3Array = PackedVector3Array()
@@ -106,6 +116,8 @@ func _setup_sim_components() -> void:
 	# HUD → modos operador
 	_hud.incident_mode_requested.connect(_on_incident_mode_start)
 	_hud.zone_draw_mode_requested.connect(_on_zone_draw_mode_start)
+	_hud.lane_close_mode_requested.connect(_on_lane_close_mode_start)
+	_hud.lane_open_mode_requested.connect(_on_lane_open_mode_start)
 	_hud.operator_mode_cancelled.connect(_on_operator_mode_cancel)
 	_hud.right_panel_closed.connect(func() -> void: _route_renderer.clear_route())
 
@@ -206,6 +218,10 @@ func _input(event: InputEvent) -> void:
 				_handle_incident_click(mouse_event.position)
 			elif _mode == Mode.ZONE_DRAWING:
 				_handle_zone_click(mouse_event.position, mouse_event.double_click)
+			elif _mode == Mode.LANE_CLOSE_PICK:
+				_handle_lane_close_click(mouse_event.position)
+			elif _mode == Mode.LANE_OPEN_PICK:
+				_handle_lane_open_click(mouse_event.position)
 			else:
 				_handle_node_click(mouse_event.position)
 
@@ -222,6 +238,20 @@ func _input(event: InputEvent) -> void:
 
 			camera.rotate_y(-delta_pos.x * _camera_rotation_speed)
 			camera.rotate_object_local(Vector3.RIGHT, -delta_pos.y * _camera_rotation_speed)
+
+		elif _mode == Mode.LANE_CLOSE_PICK or _mode == Mode.LANE_OPEN_PICK:
+			# Hover sobre edges con feedback de "preview" (cyan claro). En modo
+			# reapertura solo iluminamos tramos que efectivamente están cerrados,
+			# para evitar engañar al operador haciéndole creer que cualquier
+			# tramo es "reabrible".
+			var hovered_edge: EdgeData = edge_renderer.get_edge_at_position(motion.position, camera)
+			if _mode == Mode.LANE_OPEN_PICK and hovered_edge != null:
+				var inc := IncidentManager.find_active_incident_on_edge(
+					hovered_edge.start_node_id, hovered_edge.end_node_id
+				)
+				if inc.is_empty():
+					hovered_edge = null
+			edge_renderer.set_hover_edge(hovered_edge, Config.IncidentColors.HOVER_PREVIEW)
 
 		elif node_renderer.has_nodes():
 			var hovered := node_renderer.get_node_at_position(motion.position, camera)
@@ -405,7 +435,78 @@ func _on_operator_mode_cancel() -> void:
 	_incident_first_node = -1
 	_zone_vertices_world.clear()
 	_refresh_zone_preview()
+	if edge_renderer:
+		edge_renderer.clear_hover()
 	_hud.set_mode_hint("")
+
+
+## ── Modos de operador: cierre/reapertura rápida de tramos (demo) ────────
+
+func _on_lane_close_mode_start() -> void:
+	_mode = Mode.LANE_CLOSE_PICK
+	_hud.set_mode_hint("Cerrar tramo: pulsa sobre la calle a cerrar (Esc para cancelar)")
+
+
+func _on_lane_open_mode_start() -> void:
+	_mode = Mode.LANE_OPEN_PICK
+	_hud.set_mode_hint("Reabrir tramo: pulsa sobre un tramo cerrado (Esc para cancelar)")
+
+
+func _handle_lane_close_click(screen_pos: Vector2) -> void:
+	var edge: EdgeData = edge_renderer.get_edge_at_position(screen_pos, camera)
+	if edge == null:
+		_hud.set_mode_hint("Pulsa directamente sobre el tramo de la calle")
+		return
+	# Si el tramo ya está cerrado, no hacemos nada — evitamos crear duplicados.
+	var existing := IncidentManager.find_active_incident_on_edge(edge.start_node_id, edge.end_node_id)
+	if not existing.is_empty():
+		_hud.set_mode_hint("Ese tramo ya tiene una restricción activa (#%d)" % int(existing.get("id", 0)))
+		return
+	# Cerrar TODOS los carriles → el backend marcará blocked_edges y replanea
+	# las rutas en curso. Tipo "accident" para que el overlay salga en ROJO
+	# por defecto (es lo que comunica al operador y al público "no pasar").
+	# Para naranja/amarillo/morado, usar el flujo "Restricción avanzada…".
+	var lanes_arr: Array = []
+	for i in range(edge.lanes):
+		lanes_arr.append(i)
+	var payload := {
+		"type": "accident",
+		"edge": [edge.start_node_id, edge.end_node_id],
+		"lanes_affected": lanes_arr,
+		"duration_s": null,
+		"severity": 3,
+		"description": "Cierre manual desde HUD",
+	}
+	# Salimos del modo antes de la espera HTTP para que un segundo clic no
+	# dispare otra petición mientras la primera está en vuelo.
+	_mode = Mode.DEFAULT
+	edge_renderer.clear_hover()
+	_hud.set_mode_hint("Cerrando tramo %d → %d…" % [edge.start_node_id, edge.end_node_id])
+	var result: HTTPResult = await HTTPManager.post_request("/incidents", payload)
+	if result.success:
+		_hud.set_mode_hint("Tramo %d → %d cerrado" % [edge.start_node_id, edge.end_node_id])
+	else:
+		_hud.set_mode_hint("No se pudo cerrar el tramo (HTTP %d)" % result.status_code)
+
+
+func _handle_lane_open_click(screen_pos: Vector2) -> void:
+	var edge: EdgeData = edge_renderer.get_edge_at_position(screen_pos, camera)
+	if edge == null:
+		_hud.set_mode_hint("Pulsa directamente sobre un tramo cerrado")
+		return
+	var inc := IncidentManager.find_active_incident_on_edge(edge.start_node_id, edge.end_node_id)
+	if inc.is_empty():
+		_hud.set_mode_hint("Ese tramo no tiene ninguna restricción activa")
+		return
+	var iid := int(inc.get("id", 0))
+	_mode = Mode.DEFAULT
+	edge_renderer.clear_hover()
+	_hud.set_mode_hint("Reabriendo tramo (incidente #%d)…" % iid)
+	var result: HTTPResult = await HTTPManager.delete_request("/incidents/%d" % iid)
+	if result.success:
+		_hud.set_mode_hint("Tramo reabierto")
+	else:
+		_hud.set_mode_hint("No se pudo reabrir (HTTP %d)" % result.status_code)
 
 
 func _handle_incident_click(screen_pos: Vector2) -> void:

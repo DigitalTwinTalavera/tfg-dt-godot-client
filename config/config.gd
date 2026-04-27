@@ -387,6 +387,21 @@ class TLColors:
 	const UNKNOWN:Color = Color(0.5, 0.5,  0.5)
 
 
+## Colores de overlay para tramos con incidente activo. Se aplican como
+## "halo" sobre la malla del road para que el tipo de restricción sea
+## reconocible de un vistazo durante la demo (sin necesidad de leer la lista).
+class IncidentColors:
+	const ACCIDENT:  Color = Color(0.85, 0.10, 0.15, 0.90)  # rojo intenso
+	const ROADWORK:  Color = Color(0.95, 0.55, 0.10, 0.90)  # naranja
+	const BREAKDOWN: Color = Color(0.95, 0.85, 0.10, 0.90)  # amarillo
+	const EVENT:     Color = Color(0.55, 0.20, 0.70, 0.90)  # morado (ZBE / evento)
+	const UNKNOWN:   Color = Color(0.50, 0.50, 0.55, 0.85)
+	## Color de previsualización al pasar el cursor sobre un tramo en modo
+	## "Cerrar/Reabrir tramo". Pensado para destacar sin que se confunda
+	## con ninguno de los tipos reales (cian claro saturado).
+	const HOVER_PREVIEW: Color = Color(0.20, 0.85, 0.95, 0.85)
+
+
 ## Coordinate conversion constants
 class Coordinates:
 	## Meters per degree of latitude (approximately constant worldwide)

@@ -15,17 +15,29 @@ var _road_mesh_instance: MeshInstance3D
 ## Mesh instance for one-way arrows
 var _arrow_mesh_instance: MeshInstance3D
 
+## Mesh instance for incident overlays (rendered above the road mesh).
+## Cada tramo con incidente activo se redibuja aquí en el color de su tipo,
+## sin tocar la malla principal — así basta un re-draw del overlay (decenas de
+## edges como mucho) cuando cambia un incidente, no del road mesh entero.
+var _overlay_mesh_instance: MeshInstance3D
+
 ## ImmediateMesh for roads
 var _road_mesh: ImmediateMesh
 
 ## ImmediateMesh for arrows
 var _arrow_mesh: ImmediateMesh
 
+## ImmediateMesh for incident overlays
+var _overlay_mesh: ImmediateMesh
+
 ## Material for roads (vertex colors)
 var _road_material: StandardMaterial3D
 
 ## Material for arrows
 var _arrow_material: StandardMaterial3D
+
+## Material for overlays (vertex colors + alpha)
+var _overlay_material: StandardMaterial3D
 
 ## Coordinate converter
 var _converter: CoordinateConverter
@@ -40,12 +52,23 @@ var _edge_count: int = 0
 ## Edge ID to edge mapping
 var _edge_id_to_edge: Dictionary = {}  # int -> EdgeData
 
+## (start_node_id, end_node_id) → EdgeData. Lo construimos junto con
+## `_edge_id_to_edge` para que la UI pueda resolver una arista por sus
+## endpoints (lo que viene en el payload de incidente del backend).
+var _edge_by_endpoints: Dictionary = {}  # "u_v" -> EdgeData
+
 ## Visibility by road type
 var _visible_road_types: Dictionary = {}  # RoadType -> bool
 
 ## Selected and hovered edges
 var _selected_edge: EdgeData = null
 var _hovered_edge: EdgeData = null
+
+## Overlay state — clave: edge_id (int) → Color a pintar encima del tramo.
+var _edge_overlays: Dictionary = {}
+
+## Color del hover en modo cierre/reapertura. Si es null no se dibuja.
+var _hover_overlay_color: Variant = null
 
 ## LOD state
 var _lod_enabled: bool = false
@@ -56,6 +79,10 @@ func _ready() -> void:
 	_setup_mesh_instances()
 	_setup_materials()
 	_init_visibility_filters()
+	# Localizable desde autoloads (IncidentManager) sin acoplar el path de
+	# escena: cualquier que necesite empujar overlays usa
+	# `get_tree().get_first_node_in_group("edge_renderer")`.
+	add_to_group("edge_renderer")
 
 
 func _setup_mesh_instances() -> void:
@@ -73,6 +100,14 @@ func _setup_mesh_instances() -> void:
 	_arrow_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_arrow_mesh_instance)
 
+	# Overlay mesh — pintamos los tramos con incidente activo aquí, ligeramente
+	# elevados para que aparezcan encima del road mesh sin z-fighting.
+	_overlay_mesh = ImmediateMesh.new()
+	_overlay_mesh_instance = MeshInstance3D.new()
+	_overlay_mesh_instance.mesh = _overlay_mesh
+	_overlay_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_overlay_mesh_instance)
+
 
 func _setup_materials() -> void:
 	# Road material with vertex colors
@@ -89,6 +124,17 @@ func _setup_materials() -> void:
 	_arrow_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_arrow_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_arrow_mesh_instance.material_override = _arrow_material
+
+	# Overlay material — vertex colors con alpha para no ocultar el road por
+	# completo. Unshaded para garantizar que el color del tipo de incidente se
+	# vea exactamente como está definido en Config.IncidentColors, sin afectarlo
+	# por la iluminación de la escena.
+	_overlay_material = StandardMaterial3D.new()
+	_overlay_material.vertex_color_use_as_albedo = true
+	_overlay_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_overlay_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_overlay_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_overlay_mesh_instance.material_override = _overlay_material
 
 
 func _init_visibility_filters() -> void:
@@ -139,8 +185,10 @@ func render_edges(edges: Array[EdgeData]) -> void:
 
 	# Build edge ID mapping
 	_edge_id_to_edge.clear()
+	_edge_by_endpoints.clear()
 	for edge in edges:
 		_edge_id_to_edge[edge.id] = edge
+		_edge_by_endpoints[_endpoints_key(edge.start_node_id, edge.end_node_id)] = edge
 
 	# Render roads
 	_render_roads()
@@ -148,10 +196,25 @@ func render_edges(edges: Array[EdgeData]) -> void:
 	# Render one-way arrows
 	_render_arrows()
 
+	# Si la red se pinta DESPUÉS de que el WS de incidentes haya empujado
+	# overlays (caso habitual: snapshot inicial llega antes que los edges),
+	# `_clear_internal` habrá borrado nuestro dict — pedimos a IncidentManager
+	# que vuelva a empujar la lista. Si no, simplemente repintamos lo que
+	# tenemos (vacío, normalmente).
+	var im := get_node_or_null("/root/IncidentManager")
+	if im and im.has_method("refresh_overlays"):
+		im.call_deferred("refresh_overlays")
+	else:
+		_render_overlays()
+
 	if Config.should_log(Config.LogLevel.INFO):
 		print("[EdgeRenderer] Rendered %d edges" % _edge_count)
 
 	render_complete.emit(_edge_count)
+
+
+static func _endpoints_key(u: int, v: int) -> String:
+	return "%d_%d" % [u, v]
 
 
 ## Render road geometry
@@ -398,15 +461,247 @@ func _is_edge_visible(edge: EdgeData) -> bool:
 	return _visible_road_types.get(edge.road_type, true)
 
 
+## ─────────────────────────────────────────────────────────────────────────
+## Overlay de tramos restringidos
+##
+## El "overlay" es una segunda pasada de quads que pintamos por encima del
+## road mesh para señalizar tramos con incidente activo. Lo mantenemos en
+## una mesh aparte para no tener que re-renderizar la red entera cada vez
+## que cambia un incidente — basta con redibujar este overlay (típicamente
+## decenas de edges como mucho).
+## ─────────────────────────────────────────────────────────────────────────
+
+
+## Aplica un mapping {edge_id: Color} sobre los tramos a pintar como
+## restringidos. Sustituye la tabla anterior por completo. Pasar `{}` para
+## limpiar todos los overlays.
+func set_edge_overlays(overlays: Dictionary) -> void:
+	_edge_overlays = overlays.duplicate()
+	_render_overlays()
+
+
+## Cambia el edge resaltado (hover) durante los modos de cierre/reapertura.
+## El color del hover se decide por el caller (cyan claro al cerrar, etc.)
+## para que el HUD pueda dar pistas visuales distintas según el modo.
+## Pasa `null` o un `Variant` no-Color para limpiar el hover.
+func set_hover_edge(edge: EdgeData, hover_color: Variant = null) -> void:
+	var changed: bool = edge != _hovered_edge or hover_color != _hover_overlay_color
+	_hovered_edge = edge
+	_hover_overlay_color = hover_color
+	if changed:
+		_render_overlays()
+
+
+func clear_hover() -> void:
+	set_hover_edge(null, null)
+
+
+## Resuelve un edge por (start_node_id, end_node_id). Devuelve null si no
+## existe (por ejemplo, una arista del backend cuya geometría no se ha
+## cargado todavía, o porque la dirección no coincide).
+func get_edge_by_endpoints(u: int, v: int) -> EdgeData:
+	return _edge_by_endpoints.get(_endpoints_key(u, v), null)
+
+
+## Devuelve el edge más cercano al cursor en píxeles, o null. Iteramos
+## sobre la geometría real (no sobre quads de la malla, que se descartan
+## tras `surface_end()`); proyectamos cada vértice a screen-space y nos
+## quedamos con el segmento de menor distancia 2D al cursor.
+##
+## Threshold por defecto: la mitad del ancho del carril proyectada a píxeles
+## (con un mínimo de 8 px). Esto permite "pinchar" tramos finos en zoom
+## bajo sin que el cursor tenga que estar exactamente sobre el píxel.
+func get_edge_at_position(screen_pos: Vector2, camera: Camera3D) -> EdgeData:
+	if _edge_count == 0 or camera == null or _converter == null:
+		return null
+
+	var viewport_size: Vector2 = camera.get_viewport().get_visible_rect().size
+	var elevation := Config.EdgeRendering.ROAD_ELEVATION
+	var best_edge: EdgeData = null
+	var best_dist_sq: float = INF
+
+	for edge in _edges:
+		if not _is_edge_visible(edge):
+			continue
+		if edge.geometry.size() < 2:
+			continue
+
+		# Threshold proporcional al ancho del tramo (proyectado).
+		var width := _get_road_width(edge.lanes)
+		var threshold_px := _world_width_to_pixels(width, edge, camera, viewport_size)
+		# La selección debe estar dentro del propio carril (más un poco).
+		# Mínimo 8 px para tramos muy lejanos donde el carril es subpíxel.
+		threshold_px = maxf(threshold_px * 0.6, 8.0)
+		var threshold_sq := threshold_px * threshold_px
+
+		var prev_screen: Vector2 = Vector2.ZERO
+		var prev_valid: bool = false
+
+		for coord in edge.geometry:
+			if not (coord is Array) or coord.size() < 2:
+				prev_valid = false
+				continue
+			var godot_pos := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
+			godot_pos.y = elevation
+			# `is_position_behind` evita matemáticas raras cuando el punto
+			# queda detrás de la cámara (proyección no definida).
+			if camera.is_position_behind(godot_pos):
+				prev_valid = false
+				continue
+			var screen := camera.unproject_position(godot_pos)
+			if prev_valid:
+				var dsq := _point_to_segment_distance_sq(screen_pos, prev_screen, screen)
+				if dsq < threshold_sq and dsq < best_dist_sq:
+					best_dist_sq = dsq
+					best_edge = edge
+			prev_screen = screen
+			prev_valid = true
+
+	return best_edge
+
+
+## Renderiza el overlay con los edges presentes en `_edge_overlays` + el
+## edge en hover (si tiene color asignado).
+func _render_overlays() -> void:
+	if _overlay_mesh == null:
+		return
+	_overlay_mesh.clear_surfaces()
+
+	var has_overlays := not _edge_overlays.is_empty()
+	var has_hover := _hovered_edge != null and _hover_overlay_color is Color
+
+	if not has_overlays and not has_hover:
+		return  # nada que pintar — surface_begin sin contenido tira warning
+
+	_overlay_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	for edge_id in _edge_overlays.keys():
+		var edge: EdgeData = _edge_id_to_edge.get(edge_id, null)
+		if edge == null:
+			continue
+		if not _is_edge_visible(edge):
+			continue
+		var color: Color = _edge_overlays[edge_id]
+		_render_overlay_quads(edge, color)
+
+	if has_hover:
+		# El hover puede coincidir con un overlay activo (p. ej. al pasar
+		# sobre un tramo ya cerrado en modo "Reabrir") — lo pintamos igual,
+		# encima, para dar feedback de que ese es el tramo apuntado.
+		var hover_col: Color = _hover_overlay_color
+		_render_overlay_quads(_hovered_edge, hover_col)
+
+	_overlay_mesh.surface_end()
+
+
+## Pinta los quads de un edge en color uniforme, con un width un 5% mayor
+## que el del road para crear un "halo" visible.
+func _render_overlay_quads(edge: EdgeData, color: Color) -> void:
+	if not edge.has_valid_geometry() or edge.geometry.size() < 2:
+		return
+
+	var width := _get_road_width(edge.lanes) * 1.05
+	if edge.is_roundabout:
+		width *= 1.25
+	var half_width := width / 2.0
+	# Pintar 5 cm por encima del road para evitar z-fighting; con material
+	# unshaded esto basta y no se nota visualmente como "elevación".
+	var elevation := Config.EdgeRendering.ROAD_ELEVATION + 0.05
+
+	var points: Array[Vector3] = []
+	for coord in edge.geometry:
+		if coord is Array and coord.size() >= 2:
+			var godot_pos := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
+			godot_pos.y = elevation
+			points.append(godot_pos)
+	if points.size() < 2:
+		return
+
+	for i in range(points.size() - 1):
+		var p1 := points[i]
+		var p2 := points[i + 1]
+		var direction := (p2 - p1).normalized()
+		var perpendicular := Vector3(-direction.z, 0, direction.x).normalized()
+		var v1 := p1 + perpendicular * half_width
+		var v2 := p1 - perpendicular * half_width
+		var v3 := p2 + perpendicular * half_width
+		var v4 := p2 - perpendicular * half_width
+
+		_overlay_mesh.surface_set_normal(Vector3.UP)
+		_overlay_mesh.surface_set_color(color)
+		_overlay_mesh.surface_add_vertex(v1)
+		_overlay_mesh.surface_set_normal(Vector3.UP)
+		_overlay_mesh.surface_set_color(color)
+		_overlay_mesh.surface_add_vertex(v2)
+		_overlay_mesh.surface_set_normal(Vector3.UP)
+		_overlay_mesh.surface_set_color(color)
+		_overlay_mesh.surface_add_vertex(v3)
+
+		_overlay_mesh.surface_set_normal(Vector3.UP)
+		_overlay_mesh.surface_set_color(color)
+		_overlay_mesh.surface_add_vertex(v2)
+		_overlay_mesh.surface_set_normal(Vector3.UP)
+		_overlay_mesh.surface_set_color(color)
+		_overlay_mesh.surface_add_vertex(v4)
+		_overlay_mesh.surface_set_normal(Vector3.UP)
+		_overlay_mesh.surface_set_color(color)
+		_overlay_mesh.surface_add_vertex(v3)
+
+
+## Distancia 2D al cuadrado entre un punto y un segmento (a, b).
+## La devolvemos al cuadrado para evitar el sqrt en el caller.
+static func _point_to_segment_distance_sq(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab := b - a
+	var ab_len_sq := ab.length_squared()
+	if ab_len_sq < 1e-6:
+		return p.distance_squared_to(a)
+	var t := clampf((p - a).dot(ab) / ab_len_sq, 0.0, 1.0)
+	var projected := a + ab * t
+	return p.distance_squared_to(projected)
+
+
+## Aproxima el ancho de un tramo proyectado a píxeles, usando un punto del
+## edge como referencia. Es una aproximación — basta para calcular un
+## threshold de picking.
+func _world_width_to_pixels(world_width: float, edge: EdgeData, camera: Camera3D, _viewport_size: Vector2) -> float:
+	# Tomar el primer punto válido como referencia para la proyección.
+	for coord in edge.geometry:
+		if coord is Array and coord.size() >= 2:
+			var center := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
+			center.y = Config.EdgeRendering.ROAD_ELEVATION
+			if camera.is_position_behind(center):
+				continue
+			# Construir un offset perpendicular al rayo cámara→punto (en plano).
+			var ray := center - camera.global_position
+			var horizontal := Vector3(ray.x, 0.0, ray.z)
+			if horizontal.length_squared() < 1e-6:
+				return 8.0
+			var dir := horizontal.normalized()
+			var perp := Vector3(-dir.z, 0.0, dir.x)
+			var p_a := center + perp * (world_width * 0.5)
+			var p_b := center - perp * (world_width * 0.5)
+			if camera.is_position_behind(p_a) or camera.is_position_behind(p_b):
+				return 8.0
+			var sa := camera.unproject_position(p_a)
+			var sb := camera.unproject_position(p_b)
+			return sa.distance_to(sb)
+	return 8.0
+
+
 ## Clear internal data
 func _clear_internal() -> void:
 	_edges.clear()
 	_edge_count = 0
 	_edge_id_to_edge.clear()
+	_edge_by_endpoints.clear()
+	_edge_overlays.clear()
 	_selected_edge = null
 	_hovered_edge = null
+	_hover_overlay_color = null
 	_road_mesh.clear_surfaces()
 	_arrow_mesh.clear_surfaces()
+	if _overlay_mesh:
+		_overlay_mesh.clear_surfaces()
 
 
 ## Clear all rendered edges
@@ -473,9 +768,13 @@ func update_lod(camera: Camera3D) -> void:
 		if new_lod_level == 2:
 			_road_mesh_instance.visible = false
 			_arrow_mesh_instance.visible = false
+			if _overlay_mesh_instance:
+				_overlay_mesh_instance.visible = false
 		else:
 			_road_mesh_instance.visible = true
 			_arrow_mesh_instance.visible = true
+			if _overlay_mesh_instance:
+				_overlay_mesh_instance.visible = true
 			# Re-render with new LOD level
 			_lod_enabled = new_lod_level > 0
 			refresh()
@@ -529,6 +828,8 @@ func get_rendered_bounds() -> Dictionary:
 func set_roads_visible(visible_flag: bool) -> void:
 	_road_mesh_instance.visible = visible_flag
 	_arrow_mesh_instance.visible = visible_flag
+	if _overlay_mesh_instance:
+		_overlay_mesh_instance.visible = visible_flag
 
 
 ## Toggle only the one-way direction arrows

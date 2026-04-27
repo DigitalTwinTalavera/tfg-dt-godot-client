@@ -36,6 +36,11 @@ signal camera_smooth_changed(enabled: bool)
 ## Módulo 4 — modos de operador que la escena debe enganchar al input del mapa.
 signal incident_mode_requested()
 signal zone_draw_mode_requested()
+## Modos de cierre/reapertura por clic directo sobre el tramo (pensados para
+## la demo: durante la presentación los nodos están ocultos, así que la
+## selección se hace pulsando la calle, no los nodos).
+signal lane_close_mode_requested()
+signal lane_open_mode_requested()
 signal operator_mode_cancelled()
 signal right_panel_closed()
 
@@ -198,6 +203,10 @@ func set_renderers(node_renderer: Node, edge_renderer: Node, vehicle_renderer: N
 	_node_renderer    = node_renderer
 	_edge_renderer    = edge_renderer
 	_vehicle_renderer = vehicle_renderer
+	# Default demo-friendly: ocultar nodos. El operador puede reactivarlos desde
+	# el checkbox "Nodos" del tab Mapa (que arranca también desmarcado).
+	if _node_renderer and _node_renderer.has_method("set_nodes_visible"):
+		_node_renderer.set_nodes_visible(false)
 
 
 func update_network_stats(node_count: int, edge_count: int, road_km: float) -> void:
@@ -594,7 +603,9 @@ func _build_tab_map() -> VBoxContainer:
 
 	var chk_nodes := CheckBox.new()
 	chk_nodes.text = "Nodos"
-	chk_nodes.button_pressed = true
+	# Default OFF: durante la demo los nodos no se muestran. El operador puede
+	# activarlos puntualmente desde aquí si necesita inspeccionar la red.
+	chk_nodes.button_pressed = false
 	chk_nodes.tooltip_text = "Mostrar u ocultar las intersecciones"
 	chk_nodes.add_theme_font_size_override("font_size", 11)
 	chk_nodes.add_theme_color_override("font_color", Config.UI.TEXT_COLOR)
@@ -603,6 +614,10 @@ func _build_tab_map() -> VBoxContainer:
 			_node_renderer.set_nodes_visible(v)
 	)
 	chk_row.add_child(chk_nodes)
+	# Aplicar el estado inicial — `set_renderers()` puede llegar después de
+	# construir el HUD, así que también lo ejecutamos en `set_renderers`.
+	if _node_renderer and _node_renderer.has_method("set_nodes_visible"):
+		_node_renderer.set_nodes_visible(false)
 
 	var chk_tl := CheckBox.new()
 	chk_tl.text = "Semáforos"
@@ -1744,20 +1759,53 @@ func _build_tab_incidents() -> VBoxContainer:
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 6)
 
+	# Fila demo: cierre/reapertura por clic directo sobre la calle. Es el flujo
+	# preferido durante la presentación porque los nodos están ocultos.
 	var hdr := HBoxContainer.new()
 	hdr.add_theme_constant_override("separation", 8)
 	vbox.add_child(hdr)
 
-	var create_btn := _make_btn("⚠️ Crear incidente (seleccionar arista)")
+	var close_btn := _make_btn(
+		"🚧 Cerrar tramo",
+		"Pulsa sobre una calle para cerrarla por completo (ningún nuevo vehículo entrará)",
+		true,
+	)
+	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	close_btn.pressed.connect(func() -> void:
+		lane_close_mode_requested.emit()
+	)
+	hdr.add_child(close_btn)
+
+	var open_btn := _make_btn(
+		"✅ Reabrir tramo",
+		"Pulsa sobre un tramo cerrado para reabrirlo",
+	)
+	open_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	open_btn.pressed.connect(func() -> void:
+		lane_open_mode_requested.emit()
+	)
+	hdr.add_child(open_btn)
+
+	# Fila secundaria: flujo avanzado (tipo, severidad, duración, carriles
+	# parciales). Sigue siendo necesario el de antes para tipos como ZBE/event
+	# o cierres parciales — aquí se mantiene aunque no sea el flujo de demo.
+	var hdr2 := HBoxContainer.new()
+	hdr2.add_theme_constant_override("separation", 8)
+	vbox.add_child(hdr2)
+
+	var create_btn := _make_btn(
+		"⚙ Restricción avanzada…",
+		"Crear incidente con tipo, severidad, duración y carriles concretos (selección por nodos)",
+	)
 	create_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	create_btn.pressed.connect(func() -> void:
 		incident_mode_requested.emit()
 	)
-	hdr.add_child(create_btn)
+	hdr2.add_child(create_btn)
 
 	var clear_all_btn := _make_btn("Limpiar todo")
 	clear_all_btn.pressed.connect(_clear_all_incidents)
-	hdr.add_child(clear_all_btn)
+	hdr2.add_child(clear_all_btn)
 
 	_inc_summary_lbl = Label.new()
 	_inc_summary_lbl.text = "Activos: 0"
