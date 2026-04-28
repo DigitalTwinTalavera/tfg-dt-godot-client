@@ -245,10 +245,9 @@ func _render_single_road(edge: EdgeData) -> void:
 			Config.EdgeRendering.ROUNDABOUT_TINT_COLOR,
 			Config.EdgeRendering.ROUNDABOUT_TINT_BLEND,
 		)
-	var width := _get_road_width(edge.lanes)
+	var extent := _road_lateral_extent(edge)
 	if edge.is_roundabout:
-		width *= Config.EdgeRendering.ROUNDABOUT_WIDTH_MULTIPLIER
-	var half_width := width / 2.0
+		extent *= Config.EdgeRendering.ROUNDABOUT_WIDTH_MULTIPLIER
 	var elevation := Config.EdgeRendering.ROAD_ELEVATION
 
 	# Convert geometry to Godot positions
@@ -275,11 +274,14 @@ func _render_single_road(edge: EdgeData) -> void:
 		var direction := (p2 - p1).normalized()
 		var perpendicular := Vector3(-direction.z, 0, direction.x).normalized()
 
-		# Create quad vertices
-		var v1 := p1 + perpendicular * half_width
-		var v2 := p1 - perpendicular * half_width
-		var v3 := p2 + perpendicular * half_width
-		var v4 := p2 - perpendicular * half_width
+		# Vértices del quad: derecha = +perp · extent.y; izquierda = -perp · extent.x.
+		# Para aristas one-way (extent.x == 0) el lado izquierdo colapsa al
+		# centerline, dejando la malla íntegramente a la derecha del heading
+		# — alineada con el offset del vehículo (lane + 0.5)·LW a la derecha.
+		var v1 := p1 + perpendicular * extent.y
+		var v2 := p1 - perpendicular * extent.x
+		var v3 := p2 + perpendicular * extent.y
+		var v4 := p2 - perpendicular * extent.x
 
 		# Triangle 1: v1, v2, v3
 		_road_mesh.surface_set_normal(Vector3.UP)
@@ -447,16 +449,28 @@ func _get_road_color(road_type: EdgeData.RoadType) -> Color:
 			return Config.RoadColors.UNKNOWN
 
 
-## Get road width based on lane count
-func _get_road_width(lanes: int) -> float:
-	if lanes <= 1:
-		return Config.EdgeRendering.WIDTH_1_LANE
-	elif lanes == 2:
-		return Config.EdgeRendering.WIDTH_2_LANES
-	elif lanes == 3:
-		return Config.EdgeRendering.WIDTH_3_LANES
-	else:
-		return Config.EdgeRendering.WIDTH_4_LANES
+## Distancia lateral (m) que la calzada se extiende a cada lado del centerline.
+## Devuelve Vector2(left, right). Convención:
+##   • Arista one-way → left=0, right=lanes·LW. Toda la malla queda a la
+##     derecha del heading, alineada con el offset del vehículo
+##     ((lane+0.5)·LW a la derecha).
+##   • Arista bidireccional → left=right=lanes·LW. Cubre el rango lateral
+##     que pueden ocupar los vehículos en ambos sentidos (el simulador
+##     ejecuta MOBIL con `lanes` carriles en cada dirección — ver
+##     network_graph._load_edges).
+func _road_lateral_extent(edge: EdgeData) -> Vector2:
+	var lw := Config.VehicleRendering.LANE_WIDTH_M
+	var lanes := maxi(edge.lanes, 1)
+	var span := float(lanes) * lw
+	if edge.one_way:
+		return Vector2(0.0, span)
+	return Vector2(span, span)
+
+
+## Anchura total proyectada (m) — left + right. Para picking/threshold.
+func _road_total_width(edge: EdgeData) -> float:
+	var extent := _road_lateral_extent(edge)
+	return extent.x + extent.y
 
 
 ## Check if edge should be rendered (visibility filter)
@@ -530,7 +544,7 @@ func get_edge_at_position(screen_pos: Vector2, camera: Camera3D) -> EdgeData:
 			continue
 
 		# Threshold proporcional al ancho del tramo (proyectado).
-		var width := _get_road_width(edge.lanes)
+		var width := _road_total_width(edge)
 		var threshold_px := _world_width_to_pixels(width, edge, camera, viewport_size)
 		# La selección debe estar dentro del propio carril (más un poco).
 		# Mínimo 8 px para tramos muy lejanos donde el carril es subpíxel.
@@ -603,10 +617,10 @@ func _render_overlay_quads(edge: EdgeData, color: Color) -> void:
 	if not edge.has_valid_geometry() or edge.geometry.size() < 2:
 		return
 
-	var width := _get_road_width(edge.lanes) * 1.05
+	# Halo de 5% sobre el ancho base; rotonda añade 25% extra.
+	var extent := _road_lateral_extent(edge) * 1.05
 	if edge.is_roundabout:
-		width *= 1.25
-	var half_width := width / 2.0
+		extent *= 1.25
 	# Pintar 5 cm por encima del road para evitar z-fighting; con material
 	# unshaded esto basta y no se nota visualmente como "elevación".
 	var elevation := Config.EdgeRendering.ROAD_ELEVATION + 0.05
@@ -625,10 +639,10 @@ func _render_overlay_quads(edge: EdgeData, color: Color) -> void:
 		var p2 := points[i + 1]
 		var direction := (p2 - p1).normalized()
 		var perpendicular := Vector3(-direction.z, 0, direction.x).normalized()
-		var v1 := p1 + perpendicular * half_width
-		var v2 := p1 - perpendicular * half_width
-		var v3 := p2 + perpendicular * half_width
-		var v4 := p2 - perpendicular * half_width
+		var v1 := p1 + perpendicular * extent.y
+		var v2 := p1 - perpendicular * extent.x
+		var v3 := p2 + perpendicular * extent.y
+		var v4 := p2 - perpendicular * extent.x
 
 		_overlay_mesh.surface_set_normal(Vector3.UP)
 		_overlay_mesh.surface_set_color(color)

@@ -166,9 +166,10 @@ class VehicleRendering:
 	const ROOF_Y_OFFSET: float = 1.85  # Roof centre above road  (= BODY_HEIGHT + ROOF_HEIGHT / 2)
 	## Road clearance (raises vehicles slightly to avoid Z-fighting)
 	const CAR_ELEVATION: float = 0.2
-	## Anchura estándar de un carril (m). Se usa para posicionar lateralmente cada
-	## vehículo según su `lane`: lateral = (lane + 0.5) · LANE_WIDTH_M, proyectado
-	## perpendicular al heading (a la derecha para tráfico de mano derecha).
+	## Anchura estándar de un carril (m). Única fuente de verdad para anchos de
+	## carril en cliente: la usa tanto el offset lateral del vehículo
+	## ((lane + 0.5) · LANE_WIDTH_M proyectado a la derecha del heading) como el
+	## ancho de la malla pintada de la calzada en EdgeRenderer (lanes · LANE_WIDTH_M).
 	const LANE_WIDTH_M: float = 3.5
 	const MATERIAL_ROUGHNESS: float = 0.4
 	const MATERIAL_METALLIC: float = 0.2
@@ -277,14 +278,9 @@ class NodeRendering:
 
 ## Edge/Road rendering configuration
 class EdgeRendering:
-	## Road width per lane in meters
-	const LANE_WIDTH: float = 3.0
-
-	## Default road widths based on lane count
-	const WIDTH_1_LANE: float = 3.0   # 1 lane
-	const WIDTH_2_LANES: float = 6.0  # 2 lanes
-	const WIDTH_3_LANES: float = 9.0  # 3 lanes
-	const WIDTH_4_LANES: float = 12.0 # 4+ lanes
+	## El ancho de carril vive en VehicleRendering.LANE_WIDTH_M (única fuente de
+	## verdad). El ancho total de calzada se deriva como lanes · LANE_WIDTH_M en
+	## EdgeRenderer._road_lateral_extent.
 
 	## Road height (thickness) above ground
 	const ROAD_HEIGHT: float = 0.2
