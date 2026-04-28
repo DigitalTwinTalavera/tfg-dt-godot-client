@@ -86,6 +86,26 @@ class SimMessageTypes:
 	const ZONE: String = "zone"
 
 
+## Wire format binario para los tick messages.
+## Mantener sincronizado con app/api/websocket/messages.py (_STATUS_TO_INT,
+## _VTYPE_TO_INT, TICK_BINARY_MAGIC, TICK_BINARY_VERSION) en el backend.
+##
+## El primer byte del paquete WebSocket distingue:
+##   0x01 → TICK_BINARY_MAGIC (formato binario, parsea con StreamPeerBuffer).
+##   0x7B ('{') → JSON (parsea con JSON.parse_string).
+class WireProtocol:
+	const TICK_BINARY_MAGIC: int = 0x01
+	const TICK_BINARY_VERSION: int = 0x01
+	## Mapping enum int → string para `status`. Índices alineados con el
+	## backend: idle=0, moving=1, stopped=2, waiting=3, collision=4,
+	## paused=5, finished=6.
+	const STATUS_FROM_INT: Array[String] = [
+		"idle", "moving", "stopped", "waiting", "collision", "paused", "finished",
+	]
+	## Mapping enum int → string para `vtype`. car=0, moto=1, truck=2.
+	const VTYPE_FROM_INT: Array[String] = ["car", "moto", "truck"]
+
+
 ## Road type colors — light theme, high contrast over near-white ground
 ## (readable in projectors with strong ambient light)
 class RoadColors:

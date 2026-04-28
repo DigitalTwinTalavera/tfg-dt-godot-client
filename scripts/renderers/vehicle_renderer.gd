@@ -231,28 +231,48 @@ func _process(delta: float) -> void:
 	if _active_count == 0:
 		return
 
-	# ── Avance del reloj de render ────────────────────────────────────────────
+	# ── Avance del reloj de render con catch-up suave ────────────────────────
 	# `render_sim_time` se mantiene a `latest_server_sim_time - INTERPOLATION_DELAY`
-	# avanzando con delta local para dar movimiento suave entre ticks, pero
-	# re-anclado al reloj del servidor para eliminar drift. Nunca retrocede.
+	# avanzando con delta local para dar movimiento suave entre ticks. Cuando
+	# el backend mete ticks en ráfaga (slow tick + catch-up), el simple
+	# `+= delta` se queda atrás y antes hacíamos un snap duro hacia target,
+	# que se ve en pantalla como un salto hacia adelante de toda la flota.
+	#
+	# Catch-up suave: si vamos retrasados respecto al target, advancemos un
+	# poco más rápido (hasta 1.5× delta) en proporción al retraso. Si vamos
+	# adelantados (extrapolación), frenamos hasta 0.5× delta. Mantiene el
+	# movimiento siempre continuo — sin saltos — y converge al target en
+	# pocos frames cuando hay variabilidad de tick.
 	if _latest_server_sim_time < 0.0:
 		return  # aún no hemos recibido ningún tick
+	var target := _latest_server_sim_time - Config.VehicleRendering.INTERPOLATION_DELAY
 	if _render_sim_time < 0.0:
-		_render_sim_time = _latest_server_sim_time - Config.VehicleRendering.INTERPOLATION_DELAY
+		_render_sim_time = target
 	else:
-		_render_sim_time += delta
-		var target := _latest_server_sim_time - Config.VehicleRendering.INTERPOLATION_DELAY
-		var max_dr := Config.VehicleRendering.MAX_DEAD_RECKONING
-		# Tope superior: `snap_new_time` + MAX_DEAD_RECKONING. Así render_time
-		# puede recorrer el intervalo [t_old, t_new] completo (u = 0..1) por tick,
-		# más un margen de extrapolación si el siguiente llega tarde. Un tope en
-		# `target + max_dr` capaba u ≤ 0.5 → tirones de media-distancia cada 100 ms.
-		var upper_cap := _latest_server_sim_time + max_dr
+		var lag := target - _render_sim_time   # >0 si vamos retrasados
+		var rate_mul := 1.0
+		if lag > 0.05:
+			# Ir más rápido cuando hay >50 ms de retraso. 1.5× → cierra 50 ms
+			# de gap en ~100 ms a 60 fps. Lo bastante rápido para no notar el
+			# retraso, lo bastante suave para no parecer un teletransporte.
+			rate_mul = 1.5
+		elif lag < -0.10:
+			# Vamos por delante (extrapolando). Frenar para no alejarnos más.
+			rate_mul = 0.5
+		_render_sim_time += delta * rate_mul
+
+		# Resync duro SÓLO en casos extremos (pausa larga o cliente colgado):
+		# >2 s de divergencia indican pérdida total de sincronía, no jitter.
+		if absf(target - _render_sim_time) > 2.0:
+			_render_sim_time = target
+
+		# Tope superior absoluto: no extrapolar más allá de MAX_DEAD_RECKONING
+		# del último tick recibido (red de seguridad si el servidor se
+		# pierde). Esto NO se traduce en saltos visibles porque el catch-up
+		# suave nos ha llevado de manera continua hasta aquí.
+		var upper_cap := _latest_server_sim_time + Config.VehicleRendering.MAX_DEAD_RECKONING
 		if _render_sim_time > upper_cap:
 			_render_sim_time = upper_cap
-		# Si el reloj cliente se ha quedado muy atrás (pausa, lag), resync duro.
-		elif _render_sim_time < target - 0.5:
-			_render_sim_time = target
 
 	# ── Snapshot de la cámara para LOD ────────────────────────────────────────
 	# Leemos la posición de la cámara en el main thread (acceder a Camera3D
@@ -690,6 +710,15 @@ func _connect_signals() -> void:
 
 
 func _on_server_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
+	# Carrera con el group_task: desde que el parse de WS corre en un Thread
+	# aparte, el main thread puede llegar aquí mientras los workers del frame
+	# previo aún están leyendo los mismos arrays (`_snap_*`, `_velocity`,
+	# `_forward_*`, `_lerp_t`, …). Esperar a que terminen antes de empezar
+	# a escribirlos previene "Bad address index" en `_compute_and_write_slot`.
+	if _pending_gid >= 0:
+		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
+		_pending_gid = -1
+
 	if sim_time > _latest_server_sim_time:
 		_latest_server_sim_time = sim_time
 
@@ -715,6 +744,11 @@ func _on_server_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void
 # ── Slot management ──────────────────────────────────────────────────────────
 
 func _on_vehicle_added(vehicle_id: String, state: Dictionary) -> void:
+	# Esperar al group_task pendiente — ver razón en `_on_server_tick`.
+	if _pending_gid >= 0:
+		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
+		_pending_gid = -1
+
 	if _id_to_slot.has(vehicle_id):
 		_update_slot(_id_to_slot[vehicle_id], state)
 		return
@@ -737,6 +771,11 @@ func _on_vehicle_added(vehicle_id: String, state: Dictionary) -> void:
 ## Allocates all slots first, then calls _set_visible_count() once at the end
 ## instead of once per vehicle — critical for performance with 10k vehicles.
 func _on_vehicles_batch_added(batch: Array) -> void:
+	# Esperar al group_task pendiente — ver razón en `_on_server_tick`.
+	if _pending_gid >= 0:
+		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
+		_pending_gid = -1
+
 	var max_v := Config.VehicleRendering.MAX_VEHICLES
 	for pair in batch:
 		var vehicle_id: String = pair[0]

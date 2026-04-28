@@ -33,12 +33,31 @@ signal vehicles_batch_added(batch: Array)
 signal vehicles_batch_updated(count: int)
 
 
-## Active vehicles: id (String) → state (Dictionary)
+## Active vehicles: id (String) → state (Dictionary) — actualizado por tick.
+## Contiene SOLO los campos del último tick (lon, lat, v, a, h, status,
+## edge_idx, progress, lane, vtype, _sim_time). Los campos del spawn
+## (route_edges, start_node_id, end_node_id, route_length_m) viven en
+## `_vehicles_meta` para evitar copiarlos en cada tick.
 var vehicles: Dictionary = {}
+
+## Spawn-time metadata: id → Dictionary con campos que NO cambian tras el
+## spawn (route_edges, start_node_id, end_node_id, route_length_m, etc.).
+## Se rellena desde `_on_vehicle_spawned` y `_on_vehicles_batch_spawned`,
+## y se limpia en `_on_vehicle_finished`. `get_vehicle()` lo combina con
+## `vehicles[vid]` para los consumidores que esperan el dict completo.
+var _vehicles_meta: Dictionary = {}
 
 ## Cumulative counters (reset on reconnect)
 var total_spawned: int = 0
 var total_finished: int = 0
+
+## Stats de rendimiento del handler `_on_tick`. Usado para detectar tirones
+## sin necesidad de un overlay: cada PERF_LOG_INTERVAL ticks emitimos un
+## resumen con tiempo medio y máximo del tick, y FPS actual.
+const _PERF_LOG_INTERVAL: int = 100
+var _perf_tick_count: int = 0
+var _perf_sum_us: int = 0
+var _perf_max_us: int = 0
 
 
 func _ready() -> void:
@@ -55,9 +74,22 @@ func get_vehicle_count() -> int:
 	return vehicles.size()
 
 
-## Returns the state dict for a specific vehicle, or an empty dict if not found
+## Returns the state dict for a specific vehicle, or an empty dict if not found.
+## Combina los campos del último tick con la metadata del spawn (route_edges,
+## start_node_id, end_node_id, …) para que los consumidores de UI vean el
+## dict completo sin necesidad de saber sobre la separación interna.
 func get_vehicle(vehicle_id: String) -> Dictionary:
-	return vehicles.get(vehicle_id, {})
+	var state: Dictionary = vehicles.get(vehicle_id, {})
+	if state.is_empty():
+		return {}
+	var meta: Dictionary = _vehicles_meta.get(vehicle_id, {})
+	if meta.is_empty():
+		return state
+	# meta primero, state encima: si un campo aparece en ambos (lon/lat,
+	# vtype, lane), gana el del tick (más reciente).
+	var combined: Dictionary = meta.duplicate()
+	combined.merge(state, true)
+	return combined
 
 
 ## Returns all vehicle IDs currently tracked
@@ -65,14 +97,18 @@ func get_all_ids() -> Array:
 	return vehicles.keys()
 
 
-## Returns a snapshot copy of all vehicle states
+## Returns a snapshot copy of all vehicle states (con metadata del spawn).
 func get_all_vehicles() -> Dictionary:
-	return vehicles.duplicate(true)
+	var out: Dictionary = {}
+	for vid in vehicles:
+		out[vid] = get_vehicle(vid)
+	return out
 
 
 ## Handlers ----------------------------------------------------------------
 
 func _on_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
+	var t0 := Time.get_ticks_usec()
 	var updated := 0
 	var new_batch: Array = []
 
@@ -88,17 +124,18 @@ func _on_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
 		# tiempo local de llegada del mensaje).
 		state["_sim_time"] = sim_time
 
-		if vehicles.has(vid):
-			# Delta update: merge changed fields into existing entry.
-			# NO emitimos `vehicle_updated` por vehículo — con 6000 vehículos
-			# son 60 000 signal dispatches/s que bloqueaban el main thread y
-			# provocaban frame drops visibles como tirones. El renderer
-			# consume el array entero en una sola llamada vía `tick_received`.
-			vehicles[vid].merge(state, true)
-		else:
-			# New vehicle seen for the first time via tick
-			vehicles[vid] = state.duplicate()
-			new_batch.append([vid, vehicles[vid]])
+		# Asignación directa: el `state` viene fresh del parser (cada tick
+		# es un Dictionary nuevo) y los campos invariantes del spawn viven
+		# en `_vehicles_meta`. Esto reemplaza el `merge(state, true)` que
+		# costaba ~10 dict-writes por vehículo y por tick — con 5000 vehs
+		# a 10 Hz son 500 000 ops/s en main thread. NO emitimos
+		# `vehicle_updated` por vehículo: el renderer consume el array
+		# completo en una sola llamada vía `tick_received`.
+		var was_new := not vehicles.has(vid)
+		vehicles[vid] = state
+
+		if was_new:
+			new_batch.append([vid, state])
 
 		updated += 1
 
@@ -110,11 +147,36 @@ func _on_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
 	if updated > 0:
 		vehicles_batch_updated.emit(updated)
 
+	# Stats de tiempo de procesado del tick (microsegundos). Cada
+	# _PERF_LOG_INTERVAL ticks loggeamos avg/max + FPS y vehículos activos.
+	var dt_us := Time.get_ticks_usec() - t0
+	_perf_sum_us += dt_us
+	if dt_us > _perf_max_us:
+		_perf_max_us = dt_us
+	_perf_tick_count += 1
+	if _perf_tick_count >= _PERF_LOG_INTERVAL:
+		var avg_ms := (_perf_sum_us / float(_perf_tick_count)) / 1000.0
+		var max_ms := _perf_max_us / 1000.0
+		_log_info(
+			"Perf: on_tick avg=%.2f ms max=%.2f ms | FPS=%.0f | active=%d" % [
+				avg_ms, max_ms, Engine.get_frames_per_second(), vehicles.size(),
+			]
+		)
+		_perf_sum_us = 0
+		_perf_max_us = 0
+		_perf_tick_count = 0
+
 
 func _on_vehicle_spawned(vehicle_id: String, data: Dictionary) -> void:
+	# El mensaje `vehicle_spawned` trae los campos meta (route_edges,
+	# start_node_id, end_node_id, route_length_m) además de algunos de
+	# state. Guardamos meta en _vehicles_meta para que sobreviva al
+	# refresh del tick, y dejamos que el primer tick rellene el state.
+	_vehicles_meta[vehicle_id] = data
 	if not vehicles.has(vehicle_id):
-		vehicles[vehicle_id] = {"id": vehicle_id}
-	vehicles[vehicle_id].merge(data, true)
+		# Inicializa el state con el data del spawn por si la UI consulta
+		# antes de que llegue el primer tick.
+		vehicles[vehicle_id] = data
 	total_spawned += 1
 	vehicle_added.emit(vehicle_id, vehicles[vehicle_id])
 	_log_info(
@@ -134,10 +196,9 @@ func _on_vehicles_batch_spawned(batch: Array) -> void:
 		var vid := JsonUtils.get_string(data, "id", "")
 		if vid.is_empty():
 			continue
+		_vehicles_meta[vid] = data
 		if not vehicles.has(vid):
-			vehicles[vid] = data.duplicate()
-		else:
-			vehicles[vid].merge(data, true)
+			vehicles[vid] = data
 		pairs.append([vid, vehicles[vid]])
 	total_spawned += pairs.size()
 	if pairs.size() > 0:
@@ -148,6 +209,7 @@ func _on_vehicles_batch_spawned(batch: Array) -> void:
 func _on_vehicle_finished(vehicle_id: String) -> void:
 	if vehicles.has(vehicle_id):
 		vehicles.erase(vehicle_id)
+		_vehicles_meta.erase(vehicle_id)
 		total_finished += 1
 		vehicle_removed.emit(vehicle_id)
 		_log_debug(
@@ -161,6 +223,7 @@ func _on_vehicle_finished(vehicle_id: String) -> void:
 
 func _on_connected() -> void:
 	vehicles.clear()
+	_vehicles_meta.clear()
 	total_spawned = 0
 	total_finished = 0
 	_log_info("Reset — connection established")
