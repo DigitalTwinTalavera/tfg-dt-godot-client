@@ -221,7 +221,7 @@ func update_network_stats(node_count: int, edge_count: int, road_km: float) -> v
 
 func update_render_stats(node_stats: Dictionary, edge_stats: Dictionary) -> void:
 	## Populates the node-type and road-type breakdown labels in the Mapa tab.
-	## Called by test_node_renderer after rendering completes.
+	## Called by demo_controller after rendering completes.
 	if is_instance_valid(_lbl_node_types):
 		var type_counts: Dictionary = node_stats.get("type_counts", {})
 		var lines: PackedStringArray = []
@@ -1287,7 +1287,7 @@ func _on_vehicle_speed_changed(value: float) -> void:
 func _on_reroute_start() -> void:
 	_reroute_mode = true
 	set_mode_hint("Reasignar destino: haz click en un nodo del mapa · Esc para cancelar")
-	# The next click on the map (handled by test_node_renderer) will call
+	# The next click on the map (handled by demo_controller) will call
 	# set_reroute_target(node_id) on this HUD.
 
 

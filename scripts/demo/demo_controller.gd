@@ -293,9 +293,9 @@ func _handle_node_click(screen_pos: Vector2) -> void:
 
 func _on_loading_completed(network: RoadNetwork) -> void:
 	if Config.should_log(Config.LogLevel.DEBUG):
-		print("[TestNetworkRenderer] Network bounds_min: %s" % network.bounds_min)
-		print("[TestNetworkRenderer] Network bounds_max: %s" % network.bounds_max)
-		print("[TestNetworkRenderer] Nodes: %d, Edges: %d" % [
+		print("[Demo] Network bounds_min: %s" % network.bounds_min)
+		print("[Demo] Network bounds_max: %s" % network.bounds_max)
+		print("[Demo] Nodes: %d, Edges: %d" % [
 			network.get_node_count(), network.get_edge_count()
 		])
 
@@ -370,17 +370,17 @@ func _position_camera_for_network() -> void:
 ## Renderer signal handlers
 func _on_node_render_complete(node_count: int) -> void:
 	if Config.should_log(Config.LogLevel.INFO):
-		print("[TestNetworkRenderer] Rendered %d nodes" % node_count)
+		print("[Demo] Rendered %d nodes" % node_count)
 
 
 func _on_edge_render_complete(edge_count: int) -> void:
 	if Config.should_log(Config.LogLevel.INFO):
-		print("[TestNetworkRenderer] Rendered %d edges" % edge_count)
+		print("[Demo] Rendered %d edges" % edge_count)
 
 
 func _on_node_selected(node: NodeData) -> void:
 	if Config.should_log(Config.LogLevel.DEBUG):
-		print("[TestNetworkRenderer] Selected node: %d (%s)" % [node.id, node.get_type_string()])
+		print("[Demo] Selected node: %d (%s)" % [node.id, node.get_type_string()])
 
 
 ## ── Renderers de Módulo 4 ────────────────────────────────────────────────

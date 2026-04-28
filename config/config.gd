@@ -220,6 +220,8 @@ class VehicleRendering:
 	## Aceleración umbral (m/s²) por debajo de la cual se encienden las luces de
 	## freno. Un valor negativo pequeño evita parpadeos ante decelerations leves.
 	const BRAKE_LIGHT_ACCEL_THRESHOLD: float = -0.8
+	## Color de los neumáticos. Usado por el material del MultiMesh de ruedas.
+	const TIRE_COLOR: Color = Color(0.12, 0.12, 0.14)
 
 	## Tamaños por tipo de vehículo (m). Cada slot del MultiMesh se escala sobre
 	## BODY_LENGTH/BODY_WIDTH/BODY_HEIGHT para obtener estas dimensiones reales.
@@ -307,6 +309,13 @@ class EdgeRendering:
 	## Selection/highlight
 	const SELECTION_WIDTH_MULTIPLIER: float = 1.2
 	const HOVER_WIDTH_MULTIPLIER: float = 1.1
+
+	## Tinte aplicado a los tramos de rotonda para distinguirlos del asfalto
+	## ordinario. Se mezcla (lerp) con el color base de road_type.
+	const ROUNDABOUT_TINT_COLOR: Color = Color(0.20, 0.55, 0.60)
+	const ROUNDABOUT_TINT_BLEND: float = 0.55
+	## Multiplicador de anchura aplicado al ancho base del road cuando es rotonda.
+	const ROUNDABOUT_WIDTH_MULTIPLIER: float = 1.25
 
 
 ## Camera controller configuration
@@ -420,6 +429,25 @@ class IncidentColors:
 	## "Cerrar/Reabrir tramo". Pensado para destacar sin que se confunda
 	## con ninguno de los tipos reales (cian claro saturado).
 	const HOVER_PREVIEW: Color = Color(0.20, 0.85, 0.95, 0.85)
+
+
+## Marcador 3D por incidente — el color depende de la severity (1/2/3), no del
+## tipo. Se mantiene separado de IncidentColors (que mapea tipo → color de
+## overlay sobre la calle) porque marker y overlay son artefactos distintos.
+class IncidentSeverityColors:
+	const LOW:    Color = Color(0.92, 0.85, 0.10)  # severity 1 — amarillo
+	const MEDIUM: Color = Color(0.92, 0.48, 0.08)  # severity 2 — naranja
+	const HIGH:   Color = Color(0.85, 0.08, 0.10)  # severity 3 — rojo
+
+
+## Colores de polígono por tipo de zona de control. Alpha bajo (overlay sobre
+## el suelo) — la transparencia se aplica desde ZONE_POLYGON_ALPHA.
+class ZoneTypeColors:
+	const ZBE:        Color = Color(0.10, 0.70, 0.30)
+	const PEDESTRIAN: Color = Color(0.25, 0.45, 0.90)
+	const RESTRICTED: Color = Color(0.90, 0.55, 0.10)
+	const UNKNOWN:    Color = Color(0.50, 0.50, 0.50)
+	const POLYGON_ALPHA: float = 0.18
 
 
 ## Coordinate conversion constants

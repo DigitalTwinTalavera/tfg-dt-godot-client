@@ -9,10 +9,12 @@ class_name IncidentRenderer
 extends Node3D
 
 
-const SEVERITY_COLORS: Array = [
-	Color(0.92, 0.85, 0.10),  # 1 — amarillo
-	Color(0.92, 0.48, 0.08),  # 2 — naranja
-	Color(0.85, 0.08, 0.10),  # 3 — rojo
+## Indexado por severity-1 (severity 1/2/3 → 0/1/2). Valores tomados de
+## Config.IncidentSeverityColors para mantener una sola fuente de verdad.
+static var SEVERITY_COLORS: Array[Color] = [
+	Config.IncidentSeverityColors.LOW,
+	Config.IncidentSeverityColors.MEDIUM,
+	Config.IncidentSeverityColors.HIGH,
 ]
 const MARKER_HEIGHT_M: float = 3.0
 const MARKER_RADIUS_M: float = 1.5

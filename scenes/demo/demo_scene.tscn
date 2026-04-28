@@ -1,6 +1,6 @@
-[gd_scene load_steps=7 format=3 uid="uid://test_node_renderer"]
+[gd_scene load_steps=7 format=3 uid="uid://demo_scene_main"]
 
-[ext_resource type="Script" path="res://scripts/test_scenes/test_node_renderer.gd" id="1_test"]
+[ext_resource type="Script" path="res://scripts/demo/demo_controller.gd" id="1_test"]
 [ext_resource type="Script" path="res://scripts/renderers/node_renderer.gd" id="2_renderer"]
 [ext_resource type="Script" path="res://scripts/renderers/edge_renderer.gd" id="3_edge_renderer"]
 

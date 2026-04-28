@@ -670,7 +670,7 @@ func _make_cylinder_mmi(
 	mat.vertex_color_use_as_albedo = false
 	mat.roughness = 0.9
 	mat.metallic  = 0.0
-	mat.albedo_color = Color(0.12, 0.12, 0.14)  # tonalidad de neumático
+	mat.albedo_color = Config.VehicleRendering.TIRE_COLOR
 	cyl.surface_set_material(0, mat)
 
 	return _make_mmi_from_mesh(node_name, cyl, max_instances)
