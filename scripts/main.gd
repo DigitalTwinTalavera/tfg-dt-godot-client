@@ -1,16 +1,18 @@
-## Main scene script
-## Entry point for the Digital Twin Traffic Client application
+## Pantalla de inicio del cliente Digital Twin.
+##
+## Muestra el estado de la conexión con el backend y un único botón para
+## entrar en la escena de simulación 3D (`scenes/demo/demo_scene.tscn`).
 extends Control
 
 
 @onready var status_label: Label = $MarginContainer/VBoxContainer/StatusLabel
 @onready var backend_url_label: Label = $MarginContainer/VBoxContainer/BackendUrlLabel
 @onready var check_health_button: Button = $MarginContainer/VBoxContainer/CheckHealthButton
-@onready var open_test_scene_button: Button = $MarginContainer/VBoxContainer/OpenTestSceneButton
-@onready var open_network_test_button: Button = $MarginContainer/VBoxContainer/OpenNetworkTestButton
-@onready var open_coordinate_test_button: Button = $MarginContainer/VBoxContainer/OpenCoordinateTestButton
-@onready var open_node_renderer_button: Button = $MarginContainer/VBoxContainer/OpenNodeRendererButton
+@onready var open_demo_button: Button = $MarginContainer/VBoxContainer/OpenNodeRendererButton
 @onready var result_text: RichTextLabel = $MarginContainer/VBoxContainer/ResultText
+
+
+const DEMO_SCENE_PATH: String = "res://scenes/demo/demo_scene.tscn"
 
 
 func _ready() -> void:
@@ -26,10 +28,7 @@ func _setup_ui() -> void:
 
 func _connect_signals() -> void:
 	check_health_button.pressed.connect(_on_check_health_pressed)
-	open_test_scene_button.pressed.connect(_on_open_test_scene_pressed)
-	open_network_test_button.pressed.connect(_on_open_network_test_pressed)
-	open_coordinate_test_button.pressed.connect(_on_open_coordinate_test_pressed)
-	open_node_renderer_button.pressed.connect(_on_open_node_renderer_pressed)
+	open_demo_button.pressed.connect(_on_open_demo_pressed)
 	HTTPManager.connection_status_changed.connect(_on_connection_status_changed)
 
 
@@ -68,20 +67,8 @@ func _display_health_result(data: Variant) -> void:
 	result_text.text = text
 
 
-func _on_open_test_scene_pressed() -> void:
-	get_tree().change_scene_to_file("res://scenes/test_scenes/test_connection.tscn")
-
-
-func _on_open_network_test_pressed() -> void:
-	get_tree().change_scene_to_file("res://scenes/test_scenes/test_load_network.tscn")
-
-
-func _on_open_coordinate_test_pressed() -> void:
-	get_tree().change_scene_to_file("res://scenes/test_scenes/test_coordinates.tscn")
-
-
-func _on_open_node_renderer_pressed() -> void:
-	get_tree().change_scene_to_file("res://scenes/test_scenes/test_node_renderer.tscn")
+func _on_open_demo_pressed() -> void:
+	get_tree().change_scene_to_file(DEMO_SCENE_PATH)
 
 
 func _on_connection_status_changed(connected: bool) -> void:

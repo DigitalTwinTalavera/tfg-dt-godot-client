@@ -51,21 +51,9 @@ theme_override_constants/separation = 10
 layout_mode = 2
 text = "Check Health"
 
-[node name="OpenTestSceneButton" type="Button" parent="MarginContainer/VBoxContainer"]
-layout_mode = 2
-text = "HTTP Connection Test"
-
-[node name="OpenNetworkTestButton" type="Button" parent="MarginContainer/VBoxContainer"]
-layout_mode = 2
-text = "Network Loading Test"
-
-[node name="OpenCoordinateTestButton" type="Button" parent="MarginContainer/VBoxContainer"]
-layout_mode = 2
-text = "Coordinate Conversion Test"
-
 [node name="OpenNodeRendererButton" type="Button" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2
-text = "3D Network Renderer Test"
+text = "Iniciar simulación"
 
 [node name="HSeparator2" type="HSeparator" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2

@@ -96,7 +96,7 @@ static func from_dict(data: Dictionary) -> EdgeData:
 		if parse_result.success:
 			edge.metadata = parse_result.data
 		elif Config.should_log(Config.LogLevel.WARNING):
-			print("[EdgeData] Failed to parse metadata for edge %d: %s" % [edge.id, parse_result.error])
+			push_warning("[EdgeData] Failed to parse metadata for edge %d: %s" % [edge.id, parse_result.error])
 
 	return edge
 

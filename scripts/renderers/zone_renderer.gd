@@ -9,7 +9,9 @@ extends Node3D
 
 
 const POLYGON_HEIGHT_M: float = 0.5
-const POLYGON_ALPHA: float = 0.18
+## Toma el valor de Config.ZoneTypeColors.POLYGON_ALPHA en runtime — usado como
+## var (no const) para evitar referencias a class constants en const expressions.
+static var POLYGON_ALPHA: float = Config.ZoneTypeColors.POLYGON_ALPHA
 
 
 var _converter: CoordinateConverter = null
@@ -58,15 +60,17 @@ func _on_cleared(zone_id: int, _data: Dictionary) -> void:
 
 
 func _color_for_type(zone_type: String) -> Color:
+	var base: Color
 	match zone_type:
 		"zbe":
-			return Color(0.10, 0.70, 0.30, POLYGON_ALPHA)
+			base = Config.ZoneTypeColors.ZBE
 		"pedestrian":
-			return Color(0.25, 0.45, 0.90, POLYGON_ALPHA)
+			base = Config.ZoneTypeColors.PEDESTRIAN
 		"restricted":
-			return Color(0.90, 0.55, 0.10, POLYGON_ALPHA)
+			base = Config.ZoneTypeColors.RESTRICTED
 		_:
-			return Color(0.50, 0.50, 0.50, POLYGON_ALPHA)
+			base = Config.ZoneTypeColors.UNKNOWN
+	return Color(base.r, base.g, base.b, POLYGON_ALPHA)
 
 
 func _build_zone_mesh(data: Dictionary) -> MeshInstance3D:
