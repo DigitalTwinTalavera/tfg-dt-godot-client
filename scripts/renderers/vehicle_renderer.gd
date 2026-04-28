@@ -188,11 +188,6 @@ func get_active_count() -> int:
 	return _active_count
 
 
-func set_vehicles_visible(visible_flag: bool) -> void:
-	_body_mmi.visible = visible_flag
-	_roof_mmi.visible = visible_flag
-
-
 ## Returns the vehicle_id at screen_pos using OBB ray test, or "" if none found.
 func get_vehicle_at_position(screen_pos: Vector2, camera: Camera3D) -> String:
 	if _active_count == 0 or not camera:

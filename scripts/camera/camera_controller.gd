@@ -4,8 +4,6 @@ class_name CameraController
 extends Node3D
 
 
-## Emitted when the camera moves or rotates
-signal camera_moved(position: Vector3, rotation: Vector3)
 ## Emitted when the focal point changes
 signal focal_point_changed(focal_point: Vector3)
 ## Emitted when camera is reset to default view
