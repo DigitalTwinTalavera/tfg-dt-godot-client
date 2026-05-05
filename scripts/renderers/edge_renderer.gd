@@ -250,13 +250,7 @@ func _render_single_road(edge: EdgeData) -> void:
 		extent *= Config.EdgeRendering.ROUNDABOUT_WIDTH_MULTIPLIER
 	var elevation := Config.EdgeRendering.ROAD_ELEVATION
 
-	# Convert geometry to Godot positions
-	var points: Array[Vector3] = []
-	for coord in edge.geometry:
-		if coord is Array and coord.size() >= 2:
-			var godot_pos := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
-			godot_pos.y = elevation
-			points.append(godot_pos)
+	var points := _curve_samples(edge, elevation)
 
 	if points.size() < 2:
 		return
@@ -327,13 +321,7 @@ func _render_edge_arrows(edge: EdgeData) -> void:
 	if not edge.has_valid_geometry() or edge.geometry.size() < 2:
 		return
 
-	# Convert geometry to Godot positions
-	var points: Array[Vector3] = []
-	for coord in edge.geometry:
-		if coord is Array and coord.size() >= 2:
-			var godot_pos := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
-			godot_pos.y = Config.EdgeRendering.ARROW_HEIGHT
-			points.append(godot_pos)
+	var points := _curve_samples(edge, Config.EdgeRendering.ARROW_HEIGHT)
 
 	if points.size() < 2:
 		return
@@ -393,6 +381,53 @@ func _draw_arrow(arrow_position: Vector3, direction: Vector3) -> void:
 	_arrow_mesh.surface_add_vertex(base_left)
 	_arrow_mesh.surface_set_normal(Vector3.UP)
 	_arrow_mesh.surface_add_vertex(base_right)
+
+
+## Muestreo en world-space (Y = elevation) de la geometría de un edge.
+## Para aristas con `is_roundabout=True` evaluamos una spline Catmull-Rom
+## centrípeta sobre los waypoints en (lon, lat) y luego convertimos a Vector3
+## — coincide bit-a-bit con el muestreo que hace el backend en
+## network_graph._splinify_roundabout_edges, así la calzada que ve el operador
+## y el path por el que el simulador mueve los vehículos son la misma curva.
+##
+## Para el resto de aristas devolvemos los waypoints tal cual: el polyline
+## original ya es lo bastante denso fuera de las rotondas y no queremos
+## introducir suavizado donde el OSM pone codos rectos a propósito (p. ej.
+## intersecciones en T).
+const _CURVE_SAMPLES_PER_SEGMENT: int = 8
+
+func _curve_samples(edge: EdgeData, elevation: float) -> Array[Vector3]:
+	var out: Array[Vector3] = []
+	if edge == null or edge.geometry == null:
+		return out
+
+	# Convertimos primero los waypoints a world-space (metros) y SÓLO
+	# DESPUÉS muestreamos la spline. Razón: Godot 4 usa float32 por defecto;
+	# si la Catmull-Rom centrípeta opera sobre Vector2(lon, lat) en grados, las
+	# diferencias entre muestras adyacentes (~1e-5°) caen al filo del epsilon
+	# de float32 y el algoritmo degenera a quads radiales (pelo de calzada).
+	# `gps_to_godot` es prácticamente lineal a escala urbana, así que mover el
+	# muestreo a metros preserva la forma de la curva y le da margen numérico.
+	if edge.is_roundabout and edge.geometry.size() >= 2:
+		var planar := PackedVector2Array()
+		for coord in edge.geometry:
+			if coord is Array and coord.size() >= 2:
+				var w := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
+				planar.append(Vector2(w.x, w.z))
+		if planar.size() >= 2:
+			var sampled := Spline.sample(planar, _CURVE_SAMPLES_PER_SEGMENT)
+			out.resize(sampled.size())
+			for i in range(sampled.size()):
+				var s: Vector2 = sampled[i]
+				out[i] = Vector3(s.x, elevation, s.y)
+			return out
+
+	for coord in edge.geometry:
+		if coord is Array and coord.size() >= 2:
+			var godot_pos := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
+			godot_pos.y = elevation
+			out.append(godot_pos)
+	return out
 
 
 ## Simplify geometry for LOD
@@ -554,12 +589,11 @@ func get_edge_at_position(screen_pos: Vector2, camera: Camera3D) -> EdgeData:
 		var prev_screen: Vector2 = Vector2.ZERO
 		var prev_valid: bool = false
 
-		for coord in edge.geometry:
-			if not (coord is Array) or coord.size() < 2:
-				prev_valid = false
-				continue
-			var godot_pos := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
-			godot_pos.y = elevation
+		# Iterar sobre las muestras de la spline (rotondas) o sobre los
+		# waypoints originales — la misma fuente que pintamos en pantalla,
+		# para que el cursor "vea" exactamente lo mismo que el operador.
+		var samples := _curve_samples(edge, elevation)
+		for godot_pos in samples:
 			# `is_position_behind` evita matemáticas raras cuando el punto
 			# queda detrás de la cámara (proyección no definida).
 			if camera.is_position_behind(godot_pos):
@@ -625,12 +659,7 @@ func _render_overlay_quads(edge: EdgeData, color: Color) -> void:
 	# unshaded esto basta y no se nota visualmente como "elevación".
 	var elevation := Config.EdgeRendering.ROAD_ELEVATION + 0.05
 
-	var points: Array[Vector3] = []
-	for coord in edge.geometry:
-		if coord is Array and coord.size() >= 2:
-			var godot_pos := _converter.gps_to_godot(float(coord[0]), float(coord[1]))
-			godot_pos.y = elevation
-			points.append(godot_pos)
+	var points := _curve_samples(edge, elevation)
 	if points.size() < 2:
 		return
 
