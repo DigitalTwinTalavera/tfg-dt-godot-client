@@ -312,6 +312,12 @@ class EdgeRendering:
 	const ROUNDABOUT_TINT_BLEND: float = 0.55
 	## Multiplicador de anchura aplicado al ancho base del road cuando es rotonda.
 	const ROUNDABOUT_WIDTH_MULTIPLIER: float = 1.25
+	## Margen extra (m) que se suma a R_outer al recortar las aristas de
+	## entrada/salida de rotonda, para absorber el ángulo del brazo y la
+	## anchura del propio brazo. Sin este margen, brazos oblicuos siguen
+	## metiéndose ligeramente dentro del ring por la componente radial de la
+	## perpendicular al heading.
+	const ROUNDABOUT_ARM_TRIM_SAFETY_M: float = 1.0
 
 
 ## Camera controller configuration

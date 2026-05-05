@@ -45,6 +45,13 @@ var _converter: CoordinateConverter
 ## Camera reference for LOD
 var _camera: Camera3D
 
+## Geometría de rotondas precalculada al cargar la red. La usamos en
+## `_curve_samples` para recortar el polyline de los brazos (aristas con
+## `is_roundabout=False`) cuyo extremo cae sobre un nodo del anillo, evitando
+## que la malla se meta dentro de la corona del ring (ver
+## roundabout_geometry.gd).
+var _roundabout_geom: RoundaboutGeometry = null
+
 ## Edge data storage
 var _edges: Array[EdgeData] = []
 var _edge_count: int = 0
@@ -190,6 +197,13 @@ func render_edges(edges: Array[EdgeData]) -> void:
 		_edge_id_to_edge[edge.id] = edge
 		_edge_by_endpoints[_endpoints_key(edge.start_node_id, edge.end_node_id)] = edge
 
+	# Precalcular centros y radios de cada rotonda — el muestreo de
+	# `_curve_samples` los usa para recortar los brazos antes de extruir la
+	# malla. Sin esto, la perpendicular al heading mete los brazos oblicuos
+	# dentro del ring.
+	_roundabout_geom = RoundaboutGeometry.new()
+	_roundabout_geom.build(edges, _converter)
+
 	# Render roads
 	_render_roads()
 
@@ -250,24 +264,24 @@ func _render_single_road(edge: EdgeData) -> void:
 		extent *= Config.EdgeRendering.ROUNDABOUT_WIDTH_MULTIPLIER
 	var elevation := Config.EdgeRendering.ROAD_ELEVATION
 
-	var points := _curve_samples(edge, elevation)
+	# Para brazos puede haber 0+ piezas tras clippear contra rotondas; cada
+	# pieza se extruye independientemente.
+	for piece in _curve_samples_pieces(edge, elevation):
+		var points: Array[Vector3] = piece
+		if points.size() < 2:
+			continue
+		if _lod_enabled and _current_lod_level > 0:
+			points = _simplify_geometry(points)
+		_extrude_road_quads(points, color, extent)
 
-	if points.size() < 2:
-		return
 
-	# Simplify geometry if needed for LOD
-	if _lod_enabled and _current_lod_level > 0:
-		points = _simplify_geometry(points)
-
-	# Generate road quads
+## Extruye los quads de un polyline (un único piece) en `_road_mesh`.
+func _extrude_road_quads(points: Array[Vector3], color: Color, extent: Vector2) -> void:
 	for i in range(points.size() - 1):
 		var p1 := points[i]
 		var p2 := points[i + 1]
-
-		# Calculate perpendicular direction for road width
 		var direction := (p2 - p1).normalized()
 		var perpendicular := Vector3(-direction.z, 0, direction.x).normalized()
-
 		# Vértices del quad: derecha = +perp · extent.y; izquierda = -perp · extent.x.
 		# Para aristas one-way (extent.x == 0) el lado izquierdo colapsa al
 		# centerline, dejando la malla íntegramente a la derecha del heading
@@ -277,7 +291,6 @@ func _render_single_road(edge: EdgeData) -> void:
 		var v3 := p2 + perpendicular * extent.y
 		var v4 := p2 - perpendicular * extent.x
 
-		# Triangle 1: v1, v2, v3
 		_road_mesh.surface_set_normal(Vector3.UP)
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v1)
@@ -288,7 +301,6 @@ func _render_single_road(edge: EdgeData) -> void:
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v3)
 
-		# Triangle 2: v2, v4, v3
 		_road_mesh.surface_set_normal(Vector3.UP)
 		_road_mesh.surface_set_color(color)
 		_road_mesh.surface_add_vertex(v2)
@@ -321,12 +333,18 @@ func _render_edge_arrows(edge: EdgeData) -> void:
 	if not edge.has_valid_geometry() or edge.geometry.size() < 2:
 		return
 
-	var points := _curve_samples(edge, Config.EdgeRendering.ARROW_HEIGHT)
+	# Las flechas se distribuyen por pieza tras el clip de rotondas: en
+	# brazos clippeados aparecen flechas en cada tramo superviviente, no en
+	# el vacío del centro del ring.
+	for piece in _curve_samples_pieces(edge, Config.EdgeRendering.ARROW_HEIGHT):
+		var points: Array[Vector3] = piece
+		if points.size() < 2:
+			continue
+		_place_arrows_along(points)
 
-	if points.size() < 2:
-		return
 
-	# Calculate total length and place arrows at intervals
+## Coloca flechas one-way a lo largo de un polyline (un único piece).
+func _place_arrows_along(points: Array[Vector3]) -> void:
 	var total_length := 0.0
 	for i in range(points.size() - 1):
 		total_length += points[i].distance_to(points[i + 1])
@@ -336,10 +354,9 @@ func _render_edge_arrows(edge: EdgeData) -> void:
 	if num_arrows < 1:
 		num_arrows = 1
 
-	# Place arrows along the path
 	var accumulated_length := 0.0
 	var arrow_index := 0
-	var next_arrow_distance := arrow_spacing / 2.0  # Start at half spacing
+	var next_arrow_distance := arrow_spacing / 2.0
 
 	for i in range(points.size() - 1):
 		var p1 := points[i]
@@ -350,11 +367,9 @@ func _render_edge_arrows(edge: EdgeData) -> void:
 		while next_arrow_distance < accumulated_length + segment_length:
 			if arrow_index >= num_arrows:
 				break
-
 			var t := (next_arrow_distance - accumulated_length) / segment_length
 			var arrow_pos := p1.lerp(p2, t)
 			_draw_arrow(arrow_pos, segment_dir)
-
 			arrow_index += 1
 			next_arrow_distance += arrow_spacing
 
@@ -428,6 +443,138 @@ func _curve_samples(edge: EdgeData, elevation: float) -> Array[Vector3]:
 			godot_pos.y = elevation
 			out.append(godot_pos)
 	return out
+
+
+## Devuelve las **piezas** de polyline a renderizar para `edge`, tras
+## clippear contra los círculos de las rotondas. Para aristas del propio
+## anillo (`is_roundabout=True`) o si no hay rotondas conocidas, devuelve
+## una sola pieza con la geometría sin tocar. Para brazos, cada cruce con
+## una rotonda parte el polyline en piezas; las piezas internas al ring se
+## descartan, las externas se conservan.
+##
+## El clip cubre los tres casos que producían intrusiones:
+##   - Endpoint en nodo del anillo (la perpendicular a la malla empuja
+##     hacia adentro en aproximaciones oblicuas).
+##   - Endpoint dentro del centro del ring sin nodo etiquetado.
+##   - Polyline que atraviesa la rotonda con ambos extremos fuera.
+func _curve_samples_pieces(edge: EdgeData, elevation: float) -> Array:
+	var single := _curve_samples(edge, elevation)
+	if single.size() < 2:
+		return []
+	if edge == null or edge.is_roundabout or _roundabout_geom == null:
+		return [single]
+	var circles := _roundabout_geom.clip_circles()
+	if circles.is_empty():
+		return [single]
+	# El último quad del brazo se extruye perpendicular al heading con el
+	# ancho del carril; la mitad "interior" de esa perpendicular tiene una
+	# componente radial que en aproximaciones oblicuas penetra el asfalto del
+	# ring aunque el polyline esté clippeado en R_clip. Ampliamos el radio
+	# del clip por el lateral máximo de este brazo para que la cuña interior
+	# del quad caiga siempre fuera del anillo. Para entradas perpendiculares
+	# esto introduce un gap visible igual al medio ancho del brazo —
+	# preferible al intrusion bug.
+	var extent := _road_lateral_extent(edge)
+	var arm_half_width: float = maxf(extent.x, extent.y)
+	# Clippeamos sucesivamente contra cada círculo. Cada paso puede partir
+	# una pieza en dos (entrada y salida del ring) o eliminarla por completo
+	# si queda enteramente dentro.
+	var pieces: Array = [single]
+	for circle in circles:
+		var center: Vector2 = circle.center
+		var R: float = float(circle.R_clip_m) + arm_half_width
+		var next_pieces: Array = []
+		for piece in pieces:
+			for sub in _clip_polyline_against_circle(piece, center, R):
+				next_pieces.append(sub)
+		pieces = next_pieces
+		if pieces.is_empty():
+			break
+	return pieces
+
+
+## Clippea un polyline contra un círculo (XZ): conserva sólo las porciones
+## que caen FUERA del círculo. Las transiciones inside↔outside se
+## interpolan en la circunferencia exacta. Devuelve 0+ piezas.
+static func _clip_polyline_against_circle(
+	points: Array[Vector3],
+	center: Vector2,
+	R: float,
+) -> Array:
+	var pieces: Array = []
+	if points.size() < 2 or R <= 0.0:
+		return [points]
+	var R2 := R * R
+	var n := points.size()
+	var current: Array[Vector3] = []
+
+	var p0 := points[0]
+	var prev_inside: bool = (Vector2(p0.x, p0.z).distance_squared_to(center) < R2)
+	if not prev_inside:
+		current.append(p0)
+
+	for i in range(1, n):
+		var p := points[i]
+		var p_2d := Vector2(p.x, p.z)
+		var inside: bool = (p_2d.distance_squared_to(center) < R2)
+		var prev := points[i - 1]
+
+		if prev_inside and inside:
+			# Ambos dentro: descartar el segmento.
+			pass
+		elif prev_inside and not inside:
+			# Cruce DENTRO→FUERA: arrancar nueva pieza con el cruce.
+			var crossing := _segment_circle_intersection(p, prev, center, R)
+			current = [crossing, p]
+		elif not prev_inside and inside:
+			# Cruce FUERA→DENTRO: cerrar la pieza con el cruce.
+			var crossing := _segment_circle_intersection(prev, p, center, R)
+			current.append(crossing)
+			if current.size() >= 2:
+				pieces.append(current)
+			current = []
+		else:
+			# Ambos fuera: extender la pieza actual.
+			current.append(p)
+		prev_inside = inside
+
+	if current.size() >= 2:
+		pieces.append(current)
+	return pieces
+
+
+## Punto en el segmento [outside, inside] que cae a distancia `R_target` del
+## centro (en el plano XZ). Asume que `outside` está fuera del círculo y
+## `inside` dentro: resuelve la ecuación cuadrática de la intersección
+## segmento↔circunferencia y elige la raíz menor en [0, 1] (el cruce más
+## cercano a `outside`). Y se interpola linealmente con t.
+static func _segment_circle_intersection(
+	outside: Vector3,
+	inside: Vector3,
+	center: Vector2,
+	R_target: float,
+) -> Vector3:
+	var p0 := Vector2(outside.x, outside.z)
+	var p1 := Vector2(inside.x, inside.z)
+	var d := p1 - p0
+	var e := p0 - center
+	var a := d.dot(d)
+	var b := 2.0 * e.dot(d)
+	var c := e.dot(e) - R_target * R_target
+	if a <= 0.0:
+		return outside  # segmento degenerado (puntos coincidentes)
+	var disc := b * b - 4.0 * a * c
+	if disc < 0.0:
+		return outside  # sin intersección (no debería darse dadas las preconds)
+	var sqrt_disc := sqrt(disc)
+	# Dos raíces; queremos la más cercana a `outside`, t ∈ [0, 1].
+	var t := (-b - sqrt_disc) / (2.0 * a)
+	if t < 0.0 or t > 1.0:
+		t = (-b + sqrt_disc) / (2.0 * a)
+	t = clampf(t, 0.0, 1.0)
+	var p_xz := p0 + d * t
+	var y := lerpf(outside.y, inside.y, t)
+	return Vector3(p_xz.x, y, p_xz.y)
 
 
 ## Simplify geometry for LOD
@@ -592,21 +739,24 @@ func get_edge_at_position(screen_pos: Vector2, camera: Camera3D) -> EdgeData:
 		# Iterar sobre las muestras de la spline (rotondas) o sobre los
 		# waypoints originales — la misma fuente que pintamos en pantalla,
 		# para que el cursor "vea" exactamente lo mismo que el operador.
-		var samples := _curve_samples(edge, elevation)
-		for godot_pos in samples:
-			# `is_position_behind` evita matemáticas raras cuando el punto
-			# queda detrás de la cámara (proyección no definida).
-			if camera.is_position_behind(godot_pos):
-				prev_valid = false
-				continue
-			var screen := camera.unproject_position(godot_pos)
-			if prev_valid:
-				var dsq := _point_to_segment_distance_sq(screen_pos, prev_screen, screen)
-				if dsq < threshold_sq and dsq < best_dist_sq:
-					best_dist_sq = dsq
-					best_edge = edge
-			prev_screen = screen
-			prev_valid = true
+		# Para brazos clippeados contra rotondas, cada pieza es un polyline
+		# independiente y rompe la cadena de proyección.
+		for piece in _curve_samples_pieces(edge, elevation):
+			prev_valid = false
+			for godot_pos in piece:
+				# `is_position_behind` evita matemáticas raras cuando el
+				# punto queda detrás de la cámara (proyección no definida).
+				if camera.is_position_behind(godot_pos):
+					prev_valid = false
+					continue
+				var screen := camera.unproject_position(godot_pos)
+				if prev_valid:
+					var dsq := _point_to_segment_distance_sq(screen_pos, prev_screen, screen)
+					if dsq < threshold_sq and dsq < best_dist_sq:
+						best_dist_sq = dsq
+						best_edge = edge
+				prev_screen = screen
+				prev_valid = true
 
 	return best_edge
 
@@ -659,10 +809,14 @@ func _render_overlay_quads(edge: EdgeData, color: Color) -> void:
 	# unshaded esto basta y no se nota visualmente como "elevación".
 	var elevation := Config.EdgeRendering.ROAD_ELEVATION + 0.05
 
-	var points := _curve_samples(edge, elevation)
-	if points.size() < 2:
-		return
+	for piece in _curve_samples_pieces(edge, elevation):
+		var points: Array[Vector3] = piece
+		if points.size() < 2:
+			continue
+		_extrude_overlay_quads(points, color, extent)
 
+
+func _extrude_overlay_quads(points: Array[Vector3], color: Color, extent: Vector2) -> void:
 	for i in range(points.size() - 1):
 		var p1 := points[i]
 		var p2 := points[i + 1]
@@ -744,6 +898,7 @@ func _clear_internal() -> void:
 	_selected_edge = null
 	_hovered_edge = null
 	_hover_overlay_color = null
+	_roundabout_geom = null
 	_road_mesh.clear_surfaces()
 	_arrow_mesh.clear_surfaces()
 	if _overlay_mesh:
