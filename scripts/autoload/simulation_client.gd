@@ -245,7 +245,9 @@ func _read_available_packets() -> void:
 		# Descartamos el más antiguo para mantener la cola acotada.
 		if _raw_queue.size() >= Config.WS_MAX_QUEUE_SIZE:
 			_raw_queue.pop_front()
-		_raw_queue.push_back(_ws.get_packet())
+		var pkt: PackedByteArray = _ws.get_packet()
+		PerfMonitor.record_ws_packet(pkt.size())
+		_raw_queue.push_back(pkt)
 	_queue_mutex.unlock()
 	# Despertar al parser: si la cola tenía N elementos nuevos, un único
 	# post() basta porque el worker drena todo lo disponible en cada
@@ -285,7 +287,9 @@ func _parser_loop() -> void:
 			var raw: PackedByteArray = _raw_queue.pop_front()
 			_queue_mutex.unlock()
 
+			var t0_parse := Time.get_ticks_usec()
 			var msg := _parse_packet(raw)
+			PerfMonitor.record_us(PerfMonitor.CHANNEL_PARSE, Time.get_ticks_usec() - t0_parse)
 			if msg.is_empty():
 				continue
 
@@ -482,6 +486,7 @@ func _emit_tick(tick: int, sim_time: float, vehicles: Array) -> void:
 	_last_tick_time = now
 	_ticks_received += 1
 
+	PerfMonitor.record_tick_latency(sim_time, Time.get_ticks_msec())
 	tick_received.emit(tick, sim_time, vehicles)
 
 

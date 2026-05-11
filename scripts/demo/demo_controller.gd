@@ -16,6 +16,7 @@ var _hud: GameHUD
 var _incident_renderer: IncidentRenderer
 var _zone_renderer: ZoneRenderer
 var _route_renderer: RouteRenderer
+var _debug_overlay: CanvasLayer
 
 ## Estado de modos de operador: creación de incidente (seleccionar arista por
 ## clicks sucesivos en 2 nodos), dibujo de zona (polígono por clicks), y
@@ -96,6 +97,10 @@ func _setup_sim_components() -> void:
 	_hud.set_converter(_converter)
 	_hud.set_renderers(node_renderer, edge_renderer, _vehicle_renderer)
 	add_child(_hud)
+
+	# Debug overlay (F3) — pintado encima del HUD, oculto por defecto.
+	_debug_overlay = (load("res://scripts/ui/debug_overlay.gd") as GDScript).new()
+	add_child(_debug_overlay)
 
 	# Vehicle click → HUD right panel + dibujar ruta pendiente
 	_vehicle_renderer.vehicle_selected.connect(
@@ -613,3 +618,5 @@ func _unhandled_input(event: InputEvent) -> void:
 				_hud.cancel_reroute()
 		elif key.keycode == KEY_ENTER and _mode == Mode.ZONE_DRAWING:
 			_finish_zone_drawing()
+		elif key.keycode == KEY_F3 and _debug_overlay != null:
+			_debug_overlay.visible = not _debug_overlay.visible

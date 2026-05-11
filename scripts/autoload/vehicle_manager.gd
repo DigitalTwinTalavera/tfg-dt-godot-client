@@ -150,6 +150,7 @@ func _on_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
 	# Stats de tiempo de procesado del tick (microsegundos). Cada
 	# _PERF_LOG_INTERVAL ticks loggeamos avg/max + FPS y vehículos activos.
 	var dt_us := Time.get_ticks_usec() - t0
+	PerfMonitor.record_us(PerfMonitor.CHANNEL_TICK_APPLY, dt_us)
 	_perf_sum_us += dt_us
 	if dt_us > _perf_max_us:
 		_perf_max_us = dt_us

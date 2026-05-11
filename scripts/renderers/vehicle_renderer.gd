@@ -127,41 +127,74 @@ var _render_sim_time: float = -1.0
 ## de rodadura por frame. Cachearlo evita hacer la división en cada worker call.
 var _inv_wheel_r: float = 0.0
 
-# ── MultiMesh raw buffers (doble buffer asíncrono) ───────────────────────────
+# ── MultiMesh raw buffers (ring buffer triple, pipeline N=3) ─────────────────
 ## Layout per instance (TRANSFORM_3D + use_colors, use_custom_data=false):
 ##   floats  0-11 : Transform3D (basis columns x/y/z then origin)
 ##   floats 12-15 : Color RGBA
-## Workers write the transform portion (0-11) per frame; _update_slot writes
-## the color portion (12-15) only on status change. La portion de color se
-## mirroriza a AMBOS buffers para que cualquiera sea uploadable en cualquier
-## frame con los colores actuales.
+## Workers escriben la porción de transform (0-11) cada frame; `_update_slot`
+## escribe la porción de color (12-15) sólo en cambios de status. La porción
+## de color se mirroriza a LOS 3 SLOTS DEL RING para que cualquiera sea
+## uploadable con los colores actuales tras el upload.
 ##
-## Doble buffer: `_body_buffer` apunta al buffer DONDE LOS WORKERS ESTÁN
-## ESCRIBIENDO ESTE FRAME. `_body_buffer_alt` es la pareja, que contiene los
-## datos del frame anterior listos para upload (o serán uploadados al final).
-## Al final de _process se intercambian: el que se acaba de subir pasa a ser
-## el destino de los próximos workers (sobrescribirán transform; color
-## sobrevive porque mirroreamos las escrituras de color a ambos).
+## Ring N=3 (super-buffer): cada malla tiene UN PackedFloat32Array de tamaño
+## `slot_stride * _RING_SIZE`, dividido en 3 segmentos contiguos (ring slots).
+## Cada segmento es independiente: el que está siendo escrito por la
+## group_task actual, el escrito por la del frame anterior (in-flight todavía
+## escribiendo), y el escrito hace 2 frames (uploadable este frame).
 ##
-## Beneficio: la wait_for_group_task_completion en el siguiente frame es
-## casi-cero porque los workers tuvieron un frame entero para terminar
-## solapados con el rendering GPU. Antes era bloqueo síncrono que con 4000
-## vehículos sumaba ~6-12 ms al frame.
-var _body_buffer: PackedFloat32Array        # write target (workers escriben aquí)
-var _body_buffer_alt: PackedFloat32Array    # pareja (sube al GPU al final del frame)
-var _roof_buffer: PackedFloat32Array
-var _roof_buffer_alt: PackedFloat32Array
+## Diseño con super-buffer (en lugar de `Array[PackedFloat32Array]`): así el
+## buffer es un member var directo (refcount=1), y los workers acceden con
+## `_body_super_buffer[off + i*16 + k]` sin disparar CoW. Con un container
+## anidado, el patrón `var local = _body_buffers[idx]; local[i] = v`
+## DIVORCIA por CoW y las escrituras se pierden — confirmado leyendo
+## `Variant::set_indexed` sobre Packed*. Super-buffer evita ese vector.
+##
+## Cada frame `_process`:
+##   1. Si hay 2 group_tasks en vuelo, espera la más antigua (tuvo 2 frames
+##      enteros para correr → casi-cero a 4k vehículos).
+##   2. Copia su segmento del super-buffer a `_body_upload_buf` y lo sube
+##      al GPU. La asignación a `MultiMesh.buffer` hace una copia interna,
+##      por lo que `_body_upload_buf` puede reutilizarse el siguiente frame.
+##   3. Selecciona el segmento libre (ni in-flight ni recién subido como
+##      "GPU"). El contador `_next_ring_idx` cicla 0→1→2→0 y respeta esa
+##      exclusión por la geometría de la rotación.
+##   4. Dispatcha nueva group_task → 2 in-flight.
+##
+## Beneficio vs. doble buffer (N=2): los workers tienen 2× el frame budget
+## para terminar antes de bloquear el main thread. Para 4000 vehículos a
+## 11.2 ms de cómputo, 2× frame de 6.94 ms = 13.88 ms → wait ≈ 0 ms.
+const _RING_SIZE := 3
+var _body_super_buffer: PackedFloat32Array       # MAX_VEHICLES * 16 * _RING_SIZE
+var _roof_super_buffer: PackedFloat32Array       # same
 ## 4 ruedas por slot → MAX_VEHICLES * 4 instancias, 16 floats cada una.
-var _wheel_buffer: PackedFloat32Array
-var _wheel_buffer_alt: PackedFloat32Array
+var _wheel_super_buffer: PackedFloat32Array      # MAX_VEHICLES * 4 * 16 * _RING_SIZE
 ## 2 luces de freno por slot → MAX_VEHICLES * 2 instancias.
-var _brake_buffer: PackedFloat32Array
-var _brake_buffer_alt: PackedFloat32Array
+var _brake_super_buffer: PackedFloat32Array      # MAX_VEHICLES * 2 * 16 * _RING_SIZE
 
-## ID de la group_task pendiente del frame anterior. -1 indica que no hay
-## tarea en vuelo (primer frame o tras reset). Se espera al inicio del
-## siguiente _process antes de subir buffers.
-var _pending_gid: int = -1
+## Strides por slot del ring (cuántos floats ocupa cada ring slot dentro del
+## super-buffer). Inicializados en `_build_multimesh`.
+var _body_ring_stride: int  = 0   # MAX_VEHICLES * 16
+var _roof_ring_stride: int  = 0   # MAX_VEHICLES * 16
+var _wheel_ring_stride: int = 0   # MAX_VEHICLES * 4 * 16
+var _brake_ring_stride: int = 0   # MAX_VEHICLES * 2 * 16
+
+## Buffers pre-asignados que se uploadan al MultiMesh. Tamaño exacto requerido
+## por MultiMesh (instance_count * 16 floats por instancia). Reutilizables
+## entre frames porque `MultiMesh.buffer = X` hace una copia interna.
+var _body_upload_buf: PackedFloat32Array
+var _roof_upload_buf: PackedFloat32Array
+var _wheel_upload_buf: PackedFloat32Array
+var _brake_upload_buf: PackedFloat32Array
+
+## Group_tasks en vuelo. Cada entrada es {gid: int, idx: int} donde `idx` es
+## el ring slot que la tarea está escribiendo. Hasta 2 entradas, la más antigua
+## primero. La cola sigue el orden de dispatch.
+var _inflight: Array = []
+
+## Índice del próximo ring slot a escribir, ciclando 0→1→2→0. Junto al
+## "GPU-busy" implícito (el último uploadado) y los in-flight, la rotación
+## natural garantiza siempre seleccionar el slot libre.
+var _next_ring_idx: int = 0
 
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -223,6 +256,11 @@ func get_vehicle_at_position(screen_pos: Vector2, camera: Camera3D) -> String:
 # ── Per-frame interpolation ──────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
+	# Drenar primero las mutaciones encoladas por signal handlers — esto
+	# puede cambiar `_active_count` (altas/bajas) o `_latest_server_sim_time`
+	# (ticks). Hacerlo antes de la guarda permite que el primer vehículo
+	# levante el early-return el mismo frame en que llega.
+	_drain_pending_mutations()
 	if _active_count == 0:
 		return
 
@@ -276,58 +314,75 @@ func _process(delta: float) -> void:
 	var cam_x := 0.0
 	var cam_z := 0.0
 	var lod_dist_sq := INF
+	var lod_hide_dist_sq := INF
 	if _camera:
 		var cam_pos := _camera.global_position
 		cam_x = cam_pos.x
 		cam_z = cam_pos.z
 		var d := Config.VehicleRendering.LOD_DETAIL_DISTANCE
 		lod_dist_sq = d * d
+		var dh := Config.VehicleRendering.LOD_HIDE_DISTANCE
+		lod_hide_dist_sq = dh * dh
 
-	# ── Pipeline asíncrono (doble buffer) ────────────────────────────────────
-	# 1) Si hay tarea pendiente del frame anterior, esperarla (debe ser
-	#    casi-cero porque tuvo un frame entero solapado con el rendering).
-	# 2) Subir al GPU el buffer que los workers acaban de terminar de escribir.
-	# 3) Intercambiar punteros: el buffer recién subido pasa a ser el destino
-	#    de los próximos workers (sobrescribirán transform; los colores
-	#    sobreviven porque las escrituras de color en _update_slot se
-	#    mirrorean a ambos buffers).
-	# 4) Lanzar nueva tarea SIN esperar — los workers correrán en paralelo
-	#    al rendering GPU del frame actual.
+	# ── Pipeline asíncrono (ring buffer N=3) ─────────────────────────────────
+	# 1) Si hay 2 group_tasks en vuelo, esperar a la más antigua. Con N=3 esa
+	#    tarea tuvo 2 frames enteros solapados con el rendering → wait ≈ 0.
+	# 2) Copiar su segmento del super-buffer al upload buf y subirlo al GPU.
+	# 3) Lanzar nueva tarea sobre el ring slot libre (ni el recién uploadado
+	#    "GPU" ni el aún in-flight). El contador `_next_ring_idx` cicla
+	#    0→1→2→0 y respeta esa exclusión por la geometría de la rotación.
 	#
-	# Antes este patrón era síncrono: dispatch → wait → upload, todo en el
-	# mismo frame, lo que con 4000 vehículos sumaba 6-12 ms al frame y
-	# producía tirones perceptibles.
-	if _pending_gid >= 0:
-		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
-		_body_mmi.multimesh.buffer  = _body_buffer
-		_roof_mmi.multimesh.buffer  = _roof_buffer
-		_wheel_mmi.multimesh.buffer = _wheel_buffer
-		_brake_mmi.multimesh.buffer = _brake_buffer
-		# Swap: el buffer recién subido (el que workers acaban de llenar)
-		# se convierte en `_alt`; el `_alt` (con datos del frame anterior,
-		# ya stale en GPU) pasa a ser el nuevo destino de escritura.
-		var tmp_b: PackedFloat32Array = _body_buffer
-		_body_buffer = _body_buffer_alt
-		_body_buffer_alt = tmp_b
-		var tmp_r: PackedFloat32Array = _roof_buffer
-		_roof_buffer = _roof_buffer_alt
-		_roof_buffer_alt = tmp_r
-		var tmp_w: PackedFloat32Array = _wheel_buffer
-		_wheel_buffer = _wheel_buffer_alt
-		_wheel_buffer_alt = tmp_w
-		var tmp_br: PackedFloat32Array = _brake_buffer
-		_brake_buffer = _brake_buffer_alt
-		_brake_buffer_alt = tmp_br
+	# Con N=2 (doble buffer anterior) los workers sólo tenían 1 frame para
+	# terminar; a 4k vehículos su tiempo de pared (~11.2 ms) excedía el
+	# frame budget (6.94 ms a 144 FPS) y `render_wait` saltaba a 11 ms. Con
+	# N=3 el budget efectivo es 2× frame.
+	if _inflight.size() >= 2:
+		var oldest = _inflight[0]
+		var t0_wait := Time.get_ticks_usec()
+		WorkerThreadPool.wait_for_group_task_completion(oldest["gid"])
+		var t1_wait := Time.get_ticks_usec()
+		PerfMonitor.record_us(PerfMonitor.CHANNEL_RENDER_WAIT, t1_wait - t0_wait)
+		# Wall clock real de la group_task (dispatch → completion). Útil para
+		# saber si los workers están saturando el budget del ring (>2 frames).
+		PerfMonitor.record_us(PerfMonitor.CHANNEL_WORKER_WALL, t1_wait - oldest["dispatch_us"])
+		_inflight.pop_front()
+		var oldest_idx: int = oldest["idx"]
+		var t0_upload := Time.get_ticks_usec()
+		# Copia segmento del super-buffer → upload buf → MultiMesh. La
+		# asignación a `MultiMesh.buffer` hace una copia interna al GPU,
+		# por lo que el upload buf puede reutilizarse sin contaminar.
+		_copy_ring_segment_to_upload(oldest_idx)
+		_body_mmi.multimesh.buffer  = _body_upload_buf
+		_roof_mmi.multimesh.buffer  = _roof_upload_buf
+		_wheel_mmi.multimesh.buffer = _wheel_upload_buf
+		_brake_mmi.multimesh.buffer = _brake_upload_buf
+		PerfMonitor.record_us(PerfMonitor.CHANNEL_GPU_UPLOAD, Time.get_ticks_usec() - t0_upload)
+
+	# Selección del ring slot destino: el contador ya respeta la rotación
+	# (la otra in-flight ocupa otro slot; el GPU está leyendo el tercero,
+	# ya stale). Avanzamos antes del dispatch para preparar el siguiente.
+	var write_idx := _next_ring_idx
+	_next_ring_idx = (_next_ring_idx + 1) % _RING_SIZE
+	# Offsets dentro del super-buffer para este ring slot (bindeados al worker).
+	var body_off  := write_idx * _body_ring_stride
+	var roof_off  := write_idx * _roof_ring_stride
+	var wheel_off := write_idx * _wheel_ring_stride
+	var brake_off := write_idx * _brake_ring_stride
 
 	# Lanzar nueva group_task. Prioridad `false`: no compite con el handler
 	# del WebSocket (que también usa el WorkerThreadPool en algunos casos).
 	# Con 4000 vehículos / 20 cores: ~200 slots por worker, <1 ms por hilo.
-	_pending_gid = WorkerThreadPool.add_group_task(
-		_compute_and_write_slot.bind(_render_sim_time, delta, cam_x, cam_z, lod_dist_sq),
+	var dispatch_us := Time.get_ticks_usec()
+	var gid := WorkerThreadPool.add_group_task(
+		_compute_and_write_slot.bind(
+			_render_sim_time, delta, cam_x, cam_z, lod_dist_sq, lod_hide_dist_sq,
+			body_off, roof_off, wheel_off, brake_off,
+		),
 		_active_count,
 		-1,    # repartir entre todos los hilos disponibles
 		false  # low priority — no competir con WS handler
 	)
+	_inflight.push_back({"gid": gid, "idx": write_idx, "dispatch_us": dispatch_us})
 
 
 ## Worker-thread entry point: hace TODO el trabajo por slot (interpolar +
@@ -335,20 +390,31 @@ func _process(delta: float) -> void:
 ## WorkerThreadPool.add_group_task() con un índice distinto por thread.
 ##
 ## Thread-safety:
-##   - Escribe sólo a las posiciones (i*16..i*16+15) de _body_buffer/_roof_buffer,
-##     (i*64..i*64+63) de _wheel_buffer, (i*32..i*32+31) de _brake_buffer, y al
-##     índice i de _wheel_angle. Cada slot tiene un rango disjunto → seguro.
+##   - Escribe sólo a posiciones disjuntas dentro de los super-buffers, en
+##     el ring slot bindeado por offset (body_off, roof_off, wheel_off,
+##     brake_off): cuerpo (body_off+i*16..+15), techo igual, ruedas
+##     (wheel_off+i*64..+63), freno (brake_off+i*32..+31), y al índice i de
+##     `_wheel_angle`. Cada slot tiene un rango disjunto → seguro entre los
+##     workers de la misma group_task y entre las 2 group_tasks in-flight
+##     (que escriben a ring slots distintos del super-buffer).
+##   - Los super-buffers son member vars directos, refcount=1 → mutaciones
+##     `_body_super_buffer[k] = v` no disparan CoW y propagan al storage real.
 ##   - Lee snaps, velocidad, forward, scales, offsets: todos mutados sólo en
 ##     el main thread vía _update_slot, que corre antes que _process en el
 ##     mismo frame (handler síncrono de tick_received).
 ##   - Config.VehicleRendering.* son constantes (seguro desde cualquier thread).
 ##   - _camera NO se accede aquí: cam_x/cam_z/lod_dist_sq vienen bindeados.
 ##
-## LOD: si dist_sq(pos, cam) > lod_dist_sq, escribe transforms degenerados
-## (todos ceros) para las 4 ruedas y las 2 luces de freno. La GPU los descarta
-## en setup de vértices (primitivas degeneradas) y nos ahorramos ~80 writes +
-## 4 cos/sin por vehículo lejano. Los colores (índices 12-15 de cada instancia)
-## los conserva _update_slot; aquí sólo tocamos los 12 floats de transform.
+## LOD escalonado (3 niveles):
+##   - dist² > lod_hide_dist_sq → degenerar TODO (body+roof+wheels+brakes).
+##     Salta interpolación, trigonometría y ~150 writes "útiles". Vehículo
+##     invisible en pantalla. Para LOD_HIDE_DISTANCE = 800 m el coste es 0.
+##   - dist² > lod_dist_sq → degenerar sólo wheels+brakes (body+roof OK).
+##     Ahorra ~80 writes + 4 cos/sin. Para LOD_DETAIL_DISTANCE = 300 m la
+##     rueda ocupa <1 px en 1080p, así que es visualmente gratis.
+##   - else → near LOD: full detail con rodadura de ruedas y luces de freno.
+## Los colores (índices 12-15) los conserva `_update_slot`; aquí sólo
+## tocamos los 12 floats de transform.
 func _compute_and_write_slot(
 	i: int,
 	render_time: float,
@@ -356,8 +422,46 @@ func _compute_and_write_slot(
 	cam_x: float,
 	cam_z: float,
 	lod_dist_sq: float,
+	lod_hide_dist_sq: float,
+	body_off: int,
+	roof_off: int,
+	wheel_off: int,
+	brake_off: int,
 ) -> void:
 	if _lerp_t[i] < 0.0:
+		return
+
+	# ── LOD-hide: vehículos muy lejanos (>LOD_HIDE_DISTANCE) → degenerar todo ─
+	# A esa distancia un coche ocupa <2 px y es invisible. Saltamos
+	# interpolación, trigonometría y todas las escrituras "útiles" — sólo
+	# escribimos transforms degenerados (zeros) para asegurar invisibilidad.
+	# Usamos `_snap_new_pos` (sin interpolar) para el chequeo: a 800 m el error
+	# entre new_pos e interpolated_pos es <1 % del threshold, irrelevante.
+	var snap_pos := _snap_new_pos[i]
+	var dxh := snap_pos.x - cam_x
+	var dzh := snap_pos.z - cam_z
+	if dxh * dxh + dzh * dzh > lod_hide_dist_sq:
+		var bo_h := body_off + i * 16
+		var ro_h := roof_off + i * 16
+		# 12 floats de transform a 0 para body+roof (preservamos color 12-15).
+		_body_super_buffer[bo_h +  0] = 0.0; _body_super_buffer[bo_h +  1] = 0.0; _body_super_buffer[bo_h +  2] = 0.0; _body_super_buffer[bo_h +  3] = 0.0
+		_body_super_buffer[bo_h +  4] = 0.0; _body_super_buffer[bo_h +  5] = 0.0; _body_super_buffer[bo_h +  6] = 0.0; _body_super_buffer[bo_h +  7] = 0.0
+		_body_super_buffer[bo_h +  8] = 0.0; _body_super_buffer[bo_h +  9] = 0.0; _body_super_buffer[bo_h + 10] = 0.0; _body_super_buffer[bo_h + 11] = 0.0
+		_roof_super_buffer[ro_h +  0] = 0.0; _roof_super_buffer[ro_h +  1] = 0.0; _roof_super_buffer[ro_h +  2] = 0.0; _roof_super_buffer[ro_h +  3] = 0.0
+		_roof_super_buffer[ro_h +  4] = 0.0; _roof_super_buffer[ro_h +  5] = 0.0; _roof_super_buffer[ro_h +  6] = 0.0; _roof_super_buffer[ro_h +  7] = 0.0
+		_roof_super_buffer[ro_h +  8] = 0.0; _roof_super_buffer[ro_h +  9] = 0.0; _roof_super_buffer[ro_h + 10] = 0.0; _roof_super_buffer[ro_h + 11] = 0.0
+		var woff_h := wheel_off + i * 4 * 16
+		for wk in range(4):
+			var o := woff_h + wk * 16
+			_wheel_super_buffer[o +  0] = 0.0; _wheel_super_buffer[o +  1] = 0.0; _wheel_super_buffer[o +  2] = 0.0; _wheel_super_buffer[o +  3] = 0.0
+			_wheel_super_buffer[o +  4] = 0.0; _wheel_super_buffer[o +  5] = 0.0; _wheel_super_buffer[o +  6] = 0.0; _wheel_super_buffer[o +  7] = 0.0
+			_wheel_super_buffer[o +  8] = 0.0; _wheel_super_buffer[o +  9] = 0.0; _wheel_super_buffer[o + 10] = 0.0; _wheel_super_buffer[o + 11] = 0.0
+		var boff_h := brake_off + i * 2 * 16
+		for bk in range(2):
+			var ob := boff_h + bk * 16
+			_brake_super_buffer[ob +  0] = 0.0; _brake_super_buffer[ob +  1] = 0.0; _brake_super_buffer[ob +  2] = 0.0; _brake_super_buffer[ob +  3] = 0.0
+			_brake_super_buffer[ob +  4] = 0.0; _brake_super_buffer[ob +  5] = 0.0; _brake_super_buffer[ob +  6] = 0.0; _brake_super_buffer[ob +  7] = 0.0
+			_brake_super_buffer[ob +  8] = 0.0; _brake_super_buffer[ob +  9] = 0.0; _brake_super_buffer[ob + 10] = 0.0; _brake_super_buffer[ob + 11] = 0.0
 		return
 
 	# ── (a) Interpolación de posición + heading ───────────────────────────────
@@ -406,18 +510,19 @@ func _compute_and_write_slot(
 	var s := sin(heading)
 	var sx := _scale_x[i]; var sy := _scale_y[i]; var sz := _scale_z[i]
 	var rsx := _roof_scale_x[i]; var rsy := _roof_scale_y[i]; var rsz := _roof_scale_z[i]
-	var off := i * 16
+	var bo := body_off + i * 16   # offset absoluto en _body_super_buffer
+	var ro := roof_off + i * 16   # offset absoluto en _roof_super_buffer
 	# body — basis = R_y(heading) con escala por columna; origen en pos
-	_body_buffer[off +  0] =  c * sx; _body_buffer[off +  1] = 0.0; _body_buffer[off +  2] = -s * sz; _body_buffer[off +  3] = pos.x
-	_body_buffer[off +  4] = 0.0;     _body_buffer[off +  5] = sy;  _body_buffer[off +  6] = 0.0;     _body_buffer[off +  7] = pos.y + _body_y_off[i]
-	_body_buffer[off +  8] =  s * sx; _body_buffer[off +  9] = 0.0; _body_buffer[off + 10] =  c * sz; _body_buffer[off + 11] = pos.z
+	_body_super_buffer[bo +  0] =  c * sx; _body_super_buffer[bo +  1] = 0.0; _body_super_buffer[bo +  2] = -s * sz; _body_super_buffer[bo +  3] = pos.x
+	_body_super_buffer[bo +  4] = 0.0;     _body_super_buffer[bo +  5] = sy;  _body_super_buffer[bo +  6] = 0.0;     _body_super_buffer[bo +  7] = pos.y + _body_y_off[i]
+	_body_super_buffer[bo +  8] =  s * sx; _body_super_buffer[bo +  9] = 0.0; _body_super_buffer[bo + 10] =  c * sz; _body_super_buffer[bo + 11] = pos.z
 	# roof
-	_roof_buffer[off +  0] =  c * rsx; _roof_buffer[off +  1] = 0.0; _roof_buffer[off +  2] = -s * rsz; _roof_buffer[off +  3] = pos.x
-	_roof_buffer[off +  4] = 0.0;      _roof_buffer[off +  5] = rsy; _roof_buffer[off +  6] = 0.0;      _roof_buffer[off +  7] = pos.y + _roof_y_off[i]
-	_roof_buffer[off +  8] =  s * rsx; _roof_buffer[off +  9] = 0.0; _roof_buffer[off + 10] =  c * rsz; _roof_buffer[off + 11] = pos.z
+	_roof_super_buffer[ro +  0] =  c * rsx; _roof_super_buffer[ro +  1] = 0.0; _roof_super_buffer[ro +  2] = -s * rsz; _roof_super_buffer[ro +  3] = pos.x
+	_roof_super_buffer[ro +  4] = 0.0;      _roof_super_buffer[ro +  5] = rsy; _roof_super_buffer[ro +  6] = 0.0;      _roof_super_buffer[ro +  7] = pos.y + _roof_y_off[i]
+	_roof_super_buffer[ro +  8] =  s * rsx; _roof_super_buffer[ro +  9] = 0.0; _roof_super_buffer[ro + 10] =  c * rsz; _roof_super_buffer[ro + 11] = pos.z
 
-	var woff := i * 4 * 16
-	var boff := i * 2 * 16
+	var woff := wheel_off + i * 4 * 16   # offset absoluto en _wheel_super_buffer
+	var boff := brake_off + i * 2 * 16   # offset absoluto en _brake_super_buffer
 
 	# ── (c) LOD: lejos de cámara → transforms degenerados para ruedas + luces ─
 	var dx := pos.x - cam_x
@@ -428,14 +533,14 @@ func _compute_and_write_slot(
 		# a entrar en near-LOD.
 		for wk in range(4):
 			var o := woff + wk * 16
-			_wheel_buffer[o +  0] = 0.0; _wheel_buffer[o +  1] = 0.0; _wheel_buffer[o +  2] = 0.0; _wheel_buffer[o +  3] = 0.0
-			_wheel_buffer[o +  4] = 0.0; _wheel_buffer[o +  5] = 0.0; _wheel_buffer[o +  6] = 0.0; _wheel_buffer[o +  7] = 0.0
-			_wheel_buffer[o +  8] = 0.0; _wheel_buffer[o +  9] = 0.0; _wheel_buffer[o + 10] = 0.0; _wheel_buffer[o + 11] = 0.0
+			_wheel_super_buffer[o +  0] = 0.0; _wheel_super_buffer[o +  1] = 0.0; _wheel_super_buffer[o +  2] = 0.0; _wheel_super_buffer[o +  3] = 0.0
+			_wheel_super_buffer[o +  4] = 0.0; _wheel_super_buffer[o +  5] = 0.0; _wheel_super_buffer[o +  6] = 0.0; _wheel_super_buffer[o +  7] = 0.0
+			_wheel_super_buffer[o +  8] = 0.0; _wheel_super_buffer[o +  9] = 0.0; _wheel_super_buffer[o + 10] = 0.0; _wheel_super_buffer[o + 11] = 0.0
 		for bk in range(2):
 			var ob := boff + bk * 16
-			_brake_buffer[ob +  0] = 0.0; _brake_buffer[ob +  1] = 0.0; _brake_buffer[ob +  2] = 0.0; _brake_buffer[ob +  3] = 0.0
-			_brake_buffer[ob +  4] = 0.0; _brake_buffer[ob +  5] = 0.0; _brake_buffer[ob +  6] = 0.0; _brake_buffer[ob +  7] = 0.0
-			_brake_buffer[ob +  8] = 0.0; _brake_buffer[ob +  9] = 0.0; _brake_buffer[ob + 10] = 0.0; _brake_buffer[ob + 11] = 0.0
+			_brake_super_buffer[ob +  0] = 0.0; _brake_super_buffer[ob +  1] = 0.0; _brake_super_buffer[ob +  2] = 0.0; _brake_super_buffer[ob +  3] = 0.0
+			_brake_super_buffer[ob +  4] = 0.0; _brake_super_buffer[ob +  5] = 0.0; _brake_super_buffer[ob +  6] = 0.0; _brake_super_buffer[ob +  7] = 0.0
+			_brake_super_buffer[ob +  8] = 0.0; _brake_super_buffer[ob +  9] = 0.0; _brake_super_buffer[ob + 10] = 0.0; _brake_super_buffer[ob + 11] = 0.0
 		return
 
 	# ── (d) Near-LOD: ruedas con rodadura + luces de freno ───────────────────
@@ -459,21 +564,21 @@ func _compute_and_write_slot(
 	var c_wsx := c * wsx; var s_wsx := s * wsx
 	var c_wsz := c * wsz; var s_wsz := s * wsz
 	# FR (+wsx, -wsz)
-	_wheel_buffer[woff +  0] = wr0_x; _wheel_buffer[woff +  1] = wr0_y; _wheel_buffer[woff +  2] = wr0_z; _wheel_buffer[woff +  3] = pos.x + c_wsx + s_wsz
-	_wheel_buffer[woff +  4] = wr1_x; _wheel_buffer[woff +  5] = wr1_y; _wheel_buffer[woff +  6] = wr1_z; _wheel_buffer[woff +  7] = wy
-	_wheel_buffer[woff +  8] = wr2_x; _wheel_buffer[woff +  9] = wr2_y; _wheel_buffer[woff + 10] = wr2_z; _wheel_buffer[woff + 11] = pos.z + s_wsx - c_wsz
+	_wheel_super_buffer[woff +  0] = wr0_x; _wheel_super_buffer[woff +  1] = wr0_y; _wheel_super_buffer[woff +  2] = wr0_z; _wheel_super_buffer[woff +  3] = pos.x + c_wsx + s_wsz
+	_wheel_super_buffer[woff +  4] = wr1_x; _wheel_super_buffer[woff +  5] = wr1_y; _wheel_super_buffer[woff +  6] = wr1_z; _wheel_super_buffer[woff +  7] = wy
+	_wheel_super_buffer[woff +  8] = wr2_x; _wheel_super_buffer[woff +  9] = wr2_y; _wheel_super_buffer[woff + 10] = wr2_z; _wheel_super_buffer[woff + 11] = pos.z + s_wsx - c_wsz
 	# FL (-wsx, -wsz)
-	_wheel_buffer[woff + 16] = wr0_x; _wheel_buffer[woff + 17] = wr0_y; _wheel_buffer[woff + 18] = wr0_z; _wheel_buffer[woff + 19] = pos.x - c_wsx + s_wsz
-	_wheel_buffer[woff + 20] = wr1_x; _wheel_buffer[woff + 21] = wr1_y; _wheel_buffer[woff + 22] = wr1_z; _wheel_buffer[woff + 23] = wy
-	_wheel_buffer[woff + 24] = wr2_x; _wheel_buffer[woff + 25] = wr2_y; _wheel_buffer[woff + 26] = wr2_z; _wheel_buffer[woff + 27] = pos.z - s_wsx - c_wsz
+	_wheel_super_buffer[woff + 16] = wr0_x; _wheel_super_buffer[woff + 17] = wr0_y; _wheel_super_buffer[woff + 18] = wr0_z; _wheel_super_buffer[woff + 19] = pos.x - c_wsx + s_wsz
+	_wheel_super_buffer[woff + 20] = wr1_x; _wheel_super_buffer[woff + 21] = wr1_y; _wheel_super_buffer[woff + 22] = wr1_z; _wheel_super_buffer[woff + 23] = wy
+	_wheel_super_buffer[woff + 24] = wr2_x; _wheel_super_buffer[woff + 25] = wr2_y; _wheel_super_buffer[woff + 26] = wr2_z; _wheel_super_buffer[woff + 27] = pos.z - s_wsx - c_wsz
 	# RR (+wsx, +wsz)
-	_wheel_buffer[woff + 32] = wr0_x; _wheel_buffer[woff + 33] = wr0_y; _wheel_buffer[woff + 34] = wr0_z; _wheel_buffer[woff + 35] = pos.x + c_wsx - s_wsz
-	_wheel_buffer[woff + 36] = wr1_x; _wheel_buffer[woff + 37] = wr1_y; _wheel_buffer[woff + 38] = wr1_z; _wheel_buffer[woff + 39] = wy
-	_wheel_buffer[woff + 40] = wr2_x; _wheel_buffer[woff + 41] = wr2_y; _wheel_buffer[woff + 42] = wr2_z; _wheel_buffer[woff + 43] = pos.z + s_wsx + c_wsz
+	_wheel_super_buffer[woff + 32] = wr0_x; _wheel_super_buffer[woff + 33] = wr0_y; _wheel_super_buffer[woff + 34] = wr0_z; _wheel_super_buffer[woff + 35] = pos.x + c_wsx - s_wsz
+	_wheel_super_buffer[woff + 36] = wr1_x; _wheel_super_buffer[woff + 37] = wr1_y; _wheel_super_buffer[woff + 38] = wr1_z; _wheel_super_buffer[woff + 39] = wy
+	_wheel_super_buffer[woff + 40] = wr2_x; _wheel_super_buffer[woff + 41] = wr2_y; _wheel_super_buffer[woff + 42] = wr2_z; _wheel_super_buffer[woff + 43] = pos.z + s_wsx + c_wsz
 	# RL (-wsx, +wsz)
-	_wheel_buffer[woff + 48] = wr0_x; _wheel_buffer[woff + 49] = wr0_y; _wheel_buffer[woff + 50] = wr0_z; _wheel_buffer[woff + 51] = pos.x - c_wsx - s_wsz
-	_wheel_buffer[woff + 52] = wr1_x; _wheel_buffer[woff + 53] = wr1_y; _wheel_buffer[woff + 54] = wr1_z; _wheel_buffer[woff + 55] = wy
-	_wheel_buffer[woff + 56] = wr2_x; _wheel_buffer[woff + 57] = wr2_y; _wheel_buffer[woff + 58] = wr2_z; _wheel_buffer[woff + 59] = pos.z - s_wsx + c_wsz
+	_wheel_super_buffer[woff + 48] = wr0_x; _wheel_super_buffer[woff + 49] = wr0_y; _wheel_super_buffer[woff + 50] = wr0_z; _wheel_super_buffer[woff + 51] = pos.x - c_wsx - s_wsz
+	_wheel_super_buffer[woff + 52] = wr1_x; _wheel_super_buffer[woff + 53] = wr1_y; _wheel_super_buffer[woff + 54] = wr1_z; _wheel_super_buffer[woff + 55] = wy
+	_wheel_super_buffer[woff + 56] = wr2_x; _wheel_super_buffer[woff + 57] = wr2_y; _wheel_super_buffer[woff + 58] = wr2_z; _wheel_super_buffer[woff + 59] = pos.z - s_wsx + c_wsz
 
 	# Luces de freno: 2 instancias traseras. Pos local: (±real_w·0.35, real_h·0.55, real_l·0.5 + 0.04)
 	var real_l := Config.VehicleRendering.BODY_LENGTH * sz
@@ -483,13 +588,13 @@ func _compute_and_write_slot(
 	var bl_ly := real_h * 0.55
 	var bl_lz := real_l * 0.5 + 0.04
 	# BL-right (+bl_lx, +bl_lz)
-	_brake_buffer[boff +  0] = c;   _brake_buffer[boff +  1] = 0.0; _brake_buffer[boff +  2] = -s;  _brake_buffer[boff +  3] = pos.x + c * bl_lx - s * bl_lz
-	_brake_buffer[boff +  4] = 0.0; _brake_buffer[boff +  5] = 1.0; _brake_buffer[boff +  6] = 0.0; _brake_buffer[boff +  7] = pos.y + bl_ly
-	_brake_buffer[boff +  8] = s;   _brake_buffer[boff +  9] = 0.0; _brake_buffer[boff + 10] =  c;  _brake_buffer[boff + 11] = pos.z + s * bl_lx + c * bl_lz
+	_brake_super_buffer[boff +  0] = c;   _brake_super_buffer[boff +  1] = 0.0; _brake_super_buffer[boff +  2] = -s;  _brake_super_buffer[boff +  3] = pos.x + c * bl_lx - s * bl_lz
+	_brake_super_buffer[boff +  4] = 0.0; _brake_super_buffer[boff +  5] = 1.0; _brake_super_buffer[boff +  6] = 0.0; _brake_super_buffer[boff +  7] = pos.y + bl_ly
+	_brake_super_buffer[boff +  8] = s;   _brake_super_buffer[boff +  9] = 0.0; _brake_super_buffer[boff + 10] =  c;  _brake_super_buffer[boff + 11] = pos.z + s * bl_lx + c * bl_lz
 	# BL-left (-bl_lx, +bl_lz)
-	_brake_buffer[boff + 16] = c;   _brake_buffer[boff + 17] = 0.0; _brake_buffer[boff + 18] = -s;  _brake_buffer[boff + 19] = pos.x - c * bl_lx - s * bl_lz
-	_brake_buffer[boff + 20] = 0.0; _brake_buffer[boff + 21] = 1.0; _brake_buffer[boff + 22] = 0.0; _brake_buffer[boff + 23] = pos.y + bl_ly
-	_brake_buffer[boff + 24] = s;   _brake_buffer[boff + 25] = 0.0; _brake_buffer[boff + 26] =  c;  _brake_buffer[boff + 27] = pos.z - s * bl_lx + c * bl_lz
+	_brake_super_buffer[boff + 16] = c;   _brake_super_buffer[boff + 17] = 0.0; _brake_super_buffer[boff + 18] = -s;  _brake_super_buffer[boff + 19] = pos.x - c * bl_lx - s * bl_lz
+	_brake_super_buffer[boff + 20] = 0.0; _brake_super_buffer[boff + 21] = 1.0; _brake_super_buffer[boff + 22] = 0.0; _brake_super_buffer[boff + 23] = pos.y + bl_ly
+	_brake_super_buffer[boff + 24] = s;   _brake_super_buffer[boff + 25] = 0.0; _brake_super_buffer[boff + 26] =  c;  _brake_super_buffer[boff + 27] = pos.z - s * bl_lx + c * bl_lz
 
 
 # ── Input ────────────────────────────────────────────────────────────────────
@@ -542,18 +647,22 @@ func _build_multimesh() -> void:
 	_wheel_sep_z.resize(max_v);   _wheel_sep_z.fill(Config.VehicleRendering.VehicleSize.CAR_LENGTH * 0.35)
 
 	# Raw MultiMesh buffers: 16 floats per instance (12 transform + 4 color).
-	# Pareados (doble buffer): _body_buffer (write target) + _body_buffer_alt
-	# (uploadable). Se intercambian al final de cada _process.
-	_body_buffer.resize(max_v * 16);          _body_buffer.fill(0.0)
-	_body_buffer_alt.resize(max_v * 16);      _body_buffer_alt.fill(0.0)
-	_roof_buffer.resize(max_v * 16);          _roof_buffer.fill(0.0)
-	_roof_buffer_alt.resize(max_v * 16);      _roof_buffer_alt.fill(0.0)
-	# 4 ruedas × max_v
-	_wheel_buffer.resize(max_v * 4 * 16);     _wheel_buffer.fill(0.0)
-	_wheel_buffer_alt.resize(max_v * 4 * 16); _wheel_buffer_alt.fill(0.0)
-	# 2 luces de freno × max_v
-	_brake_buffer.resize(max_v * 2 * 16);     _brake_buffer.fill(0.0)
-	_brake_buffer_alt.resize(max_v * 2 * 16); _brake_buffer_alt.fill(0.0)
+	# Super-buffer único por malla con 3 segmentos (ring slots) contiguos.
+	# Mantenerlo como member var directo evita el divorcio por CoW que sufre
+	# `Array[PackedFloat32Array]` con accesos `var local = arr[i]; local[j] = v`.
+	_body_ring_stride  = max_v * 16
+	_roof_ring_stride  = max_v * 16
+	_wheel_ring_stride = max_v * 4 * 16
+	_brake_ring_stride = max_v * 2 * 16
+	_body_super_buffer.resize(_body_ring_stride * _RING_SIZE);   _body_super_buffer.fill(0.0)
+	_roof_super_buffer.resize(_roof_ring_stride * _RING_SIZE);   _roof_super_buffer.fill(0.0)
+	_wheel_super_buffer.resize(_wheel_ring_stride * _RING_SIZE); _wheel_super_buffer.fill(0.0)
+	_brake_super_buffer.resize(_brake_ring_stride * _RING_SIZE); _brake_super_buffer.fill(0.0)
+	# Upload buffers (un solo segmento). Pre-asignados, reutilizables entre frames.
+	_body_upload_buf.resize(_body_ring_stride);   _body_upload_buf.fill(0.0)
+	_roof_upload_buf.resize(_roof_ring_stride);   _roof_upload_buf.fill(0.0)
+	_wheel_upload_buf.resize(_wheel_ring_stride); _wheel_upload_buf.fill(0.0)
+	_brake_upload_buf.resize(_brake_ring_stride); _brake_upload_buf.fill(0.0)
 
 	_body_mmi = _make_box_mmi(
 		"VehicleBodyMesh",
@@ -690,6 +799,24 @@ func _make_mmi_from_mesh(
 	return mmi
 
 
+## Extrae el segmento ring `ring_idx` de cada super-buffer y lo deja en el
+## upload buf correspondiente. `PackedFloat32Array.slice()` es C++ nativo
+## (memcpy bajo el capó), ~10 GB/s, mucho más rápido que un bucle GDScript:
+## a MAX_VEHICLES=10000 los 4 segmentos suman ~5 MB → < 1 ms total.
+##
+## Histórico: la primera versión usaba un bucle interpretado y añadía ~25 ms
+## de overhead a 7k vehículos (FPS 73→29). El bench post-fix lo confirmó.
+func _copy_ring_segment_to_upload(ring_idx: int) -> void:
+	var b_src := ring_idx * _body_ring_stride
+	_body_upload_buf = _body_super_buffer.slice(b_src, b_src + _body_ring_stride)
+	var r_src := ring_idx * _roof_ring_stride
+	_roof_upload_buf = _roof_super_buffer.slice(r_src, r_src + _roof_ring_stride)
+	var w_src := ring_idx * _wheel_ring_stride
+	_wheel_upload_buf = _wheel_super_buffer.slice(w_src, w_src + _wheel_ring_stride)
+	var br_src := ring_idx * _brake_ring_stride
+	_brake_upload_buf = _brake_super_buffer.slice(br_src, br_src + _brake_ring_stride)
+
+
 # ── Signal wiring ────────────────────────────────────────────────────────────
 
 func _connect_signals() -> void:
@@ -704,16 +831,92 @@ func _connect_signals() -> void:
 	SimulationClient.tick_received.connect(_on_server_tick)
 
 
-func _on_server_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
-	# Carrera con el group_task: desde que el parse de WS corre en un Thread
-	# aparte, el main thread puede llegar aquí mientras los workers del frame
-	# previo aún están leyendo los mismos arrays (`_snap_*`, `_velocity`,
-	# `_forward_*`, `_lerp_t`, …). Esperar a que terminen antes de empezar
-	# a escribirlos previene "Bad address index" en `_compute_and_write_slot`.
-	if _pending_gid >= 0:
-		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
-		_pending_gid = -1
+## Espera a TODAS las group_tasks en vuelo del ring y vacía la cola. Necesario
+## antes de mutar las arrays de estado de slot (`_snap_*`, `_velocity`, …)
+## que los workers están leyendo. Con N=3 puede haber 2 in-flight, así que
+## esperamos a las dos antes de tocar nada.
+func _wait_all_inflight() -> void:
+	for entry in _inflight:
+		WorkerThreadPool.wait_for_group_task_completion(entry["gid"])
+	_inflight.clear()
 
+
+# ── Mutaciones diferidas ──────────────────────────────────────────────────────
+#
+# Los signal handlers de SimulationClient/VehicleManager pueden fire mid-frame
+# desde `_drain_queue` del cliente WS. Aplicar mutaciones al estado de slot
+# (`_snap_*`, `_active_count`, etc.) en ese momento requería un
+# `_wait_all_inflight()` por handler — hasta 5 veces por frame en condiciones
+# de stress (varios ticks + altas/bajas en la misma frame).
+#
+# Solución: encolar las mutaciones y drenarlas en UN ÚNICO PUNTO al inicio de
+# `_process()`, justo antes de wait+upload+dispatch. Allí hacemos un solo
+# `_wait_all_inflight()` por frame (o ninguno, si la cola está vacía). Esto:
+#   - Centraliza el wait en un punto predecible (mejor para profiling).
+#   - Reduce mid-frame stalls en frames con muchos signal events.
+#   - Mantiene el orden FIFO para que las altas precedan a sus updates de tick.
+#
+# La latencia añadida (1 frame entre signal y aplicación) es negligible bajo
+# `INTERPOLATION_DELAY` (cientos de ms) y el ring buffer del worker.
+var _pending_mutations: Array = []
+
+
+func _on_server_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void:
+	_pending_mutations.append({
+		"kind": "tick",
+		"sim_time": sim_time,
+		"states": vehicle_states,
+	})
+
+
+# ── Slot management ──────────────────────────────────────────────────────────
+
+func _on_vehicle_added(vehicle_id: String, state: Dictionary) -> void:
+	_pending_mutations.append({
+		"kind": "added",
+		"id": vehicle_id,
+		"state": state,
+	})
+
+
+## Handles a batch of new vehicles arriving in a single tick.
+## Allocates all slots first, then calls _set_visible_count() once at the end
+## instead of once per vehicle — critical for performance with 10k vehicles.
+func _on_vehicles_batch_added(batch: Array) -> void:
+	_pending_mutations.append({
+		"kind": "batch_added",
+		"batch": batch,
+	})
+
+
+func _on_vehicle_removed(vehicle_id: String) -> void:
+	_pending_mutations.append({
+		"kind": "removed",
+		"id": vehicle_id,
+	})
+
+
+## Drena `_pending_mutations` aplicando cada entrada en orden. Espera a TODAS
+## las group_tasks en vuelo una sola vez, sólo si la cola no está vacía. Llamado
+## al inicio de `_process()`, antes del wait-oldest del ring buffer.
+func _drain_pending_mutations() -> void:
+	if _pending_mutations.is_empty():
+		return
+	# Es seguro mutar `_snap_*` sólo si NINGÚN worker las está leyendo. Con 2
+	# group_tasks in-flight, esperamos a ambas. Coste: ~remaining wall-clock
+	# del worker más nuevo (≤ 1 frame con ring N=3 + LOD escalonado).
+	_wait_all_inflight()
+	for m in _pending_mutations:
+		match m["kind"]:
+			"tick":         _apply_tick(m["sim_time"], m["states"])
+			"added":        _apply_added(m["id"], m["state"])
+			"batch_added":  _apply_batch_added(m["batch"])
+			"removed":      _apply_removed(m["id"])
+			"reset":        _apply_reset()
+	_pending_mutations.clear()
+
+
+func _apply_tick(sim_time: float, vehicle_states: Array) -> void:
 	if sim_time > _latest_server_sim_time:
 		_latest_server_sim_time = sim_time
 
@@ -736,14 +939,7 @@ func _on_server_tick(_tick: int, sim_time: float, vehicle_states: Array) -> void
 		_update_slot(int(slot_val), state)
 
 
-# ── Slot management ──────────────────────────────────────────────────────────
-
-func _on_vehicle_added(vehicle_id: String, state: Dictionary) -> void:
-	# Esperar al group_task pendiente — ver razón en `_on_server_tick`.
-	if _pending_gid >= 0:
-		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
-		_pending_gid = -1
-
+func _apply_added(vehicle_id: String, state: Dictionary) -> void:
 	if _id_to_slot.has(vehicle_id):
 		_update_slot(_id_to_slot[vehicle_id], state)
 		return
@@ -762,15 +958,7 @@ func _on_vehicle_added(vehicle_id: String, state: Dictionary) -> void:
 	_update_slot(slot, state)
 
 
-## Handles a batch of new vehicles arriving in a single tick.
-## Allocates all slots first, then calls _set_visible_count() once at the end
-## instead of once per vehicle — critical for performance with 10k vehicles.
-func _on_vehicles_batch_added(batch: Array) -> void:
-	# Esperar al group_task pendiente — ver razón en `_on_server_tick`.
-	if _pending_gid >= 0:
-		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
-		_pending_gid = -1
-
+func _apply_batch_added(batch: Array) -> void:
 	var max_v := Config.VehicleRendering.MAX_VEHICLES
 	for pair in batch:
 		var vehicle_id: String = pair[0]
@@ -790,17 +978,9 @@ func _on_vehicles_batch_added(batch: Array) -> void:
 	_set_visible_count(_active_count)
 
 
-func _on_vehicle_removed(vehicle_id: String) -> void:
+func _apply_removed(vehicle_id: String) -> void:
 	if not _id_to_slot.has(vehicle_id):
 		return
-
-	# Doble buffer: si los workers aún están escribiendo en _body_buffer,
-	# esperar antes de mover slots para evitar carrera con _copy_slot_state.
-	# Coste típico: ~0 (los workers ya terminaron). En el peor caso,
-	# bloquea unos μs hasta que el último hilo escriba el último slot.
-	if _pending_gid >= 0:
-		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
-		_pending_gid = -1
 
 	var slot: int = _id_to_slot[vehicle_id]
 	_id_to_slot.erase(vehicle_id)
@@ -844,27 +1024,25 @@ func _copy_slot_state(src: int, dst: int) -> void:
 	_wheel_angle[dst]   = _wheel_angle[src]
 	_wheel_sep_x[dst]   = _wheel_sep_x[src]
 	_wheel_sep_z[dst]   = _wheel_sep_z[src]
-	# Copiar los 16 floats del buffer (12 transform + 4 color) desde src a dst.
-	# Mirroreado a AMBOS buffers para mantener consistencia tras el swap.
-	var src_off := src * 16
-	var dst_off := dst * 16
-	for k in range(16):
-		_body_buffer[dst_off + k]     = _body_buffer[src_off + k]
-		_body_buffer_alt[dst_off + k] = _body_buffer_alt[src_off + k]
-		_roof_buffer[dst_off + k]     = _roof_buffer[src_off + k]
-		_roof_buffer_alt[dst_off + k] = _roof_buffer_alt[src_off + k]
-	# Las 4 ruedas y 2 luces de freno viven en buffers más grandes: copiar
-	# sus bloques contiguos (4×16 y 2×16 floats respectivamente).
-	var wheel_src := src * 4 * 16
-	var wheel_dst := dst * 4 * 16
-	for k in range(4 * 16):
-		_wheel_buffer[wheel_dst + k]     = _wheel_buffer[wheel_src + k]
-		_wheel_buffer_alt[wheel_dst + k] = _wheel_buffer_alt[wheel_src + k]
-	var brake_src := src * 2 * 16
-	var brake_dst := dst * 2 * 16
-	for k in range(2 * 16):
-		_brake_buffer[brake_dst + k]     = _brake_buffer[brake_src + k]
-		_brake_buffer_alt[brake_dst + k] = _brake_buffer_alt[brake_src + k]
+	# Copiar los 16 floats del slot (12 transform + 4 color) desde src a dst,
+	# en LOS 3 RING SLOTS de cada super-buffer (cualquiera de los 3 puede ser
+	# el próximo en uploadarse, así que la consistencia debe ser global).
+	# Acceso directo al member var super-buffer para evitar CoW.
+	for ring_i in range(_RING_SIZE):
+		var src_o := ring_i * _body_ring_stride + src * 16
+		var dst_o := ring_i * _body_ring_stride + dst * 16
+		for k in range(16):
+			_body_super_buffer[dst_o + k] = _body_super_buffer[src_o + k]
+			_roof_super_buffer[dst_o + k] = _roof_super_buffer[src_o + k]
+	for ring_i in range(_RING_SIZE):
+		var wsrc := ring_i * _wheel_ring_stride + src * 4 * 16
+		var wdst := ring_i * _wheel_ring_stride + dst * 4 * 16
+		for k in range(4 * 16):
+			_wheel_super_buffer[wdst + k] = _wheel_super_buffer[wsrc + k]
+		var bsrc := ring_i * _brake_ring_stride + src * 2 * 16
+		var bdst := ring_i * _brake_ring_stride + dst * 2 * 16
+		for k in range(2 * 16):
+			_brake_super_buffer[bdst + k] = _brake_super_buffer[bsrc + k]
 
 
 ## Reset a slot's state to its uninitialised defaults.
@@ -877,21 +1055,21 @@ func _clear_slot(slot: int) -> void:
 
 
 func _on_ws_connected() -> void:
-	# Si hay una group_task del frame anterior aún en vuelo, esperar antes
-	# de tocar los buffers para evitar carrera con los workers.
-	if _pending_gid >= 0:
-		WorkerThreadPool.wait_for_group_task_completion(_pending_gid)
-		_pending_gid = -1
+	_pending_mutations.append({"kind": "reset"})
+
+
+func _apply_reset() -> void:
+	# `_drain_pending_mutations` ya hizo `_wait_all_inflight()` antes de llamarnos.
 	_active_count = 0
 	_id_to_slot.clear()
 	_slot_to_id.fill("")
 	_lerp_t.fill(-1.0)
 	_snap_old_time.fill(0.0)
 	_snap_new_time.fill(0.0)
-	_body_buffer.fill(0.0);     _body_buffer_alt.fill(0.0)
-	_roof_buffer.fill(0.0);     _roof_buffer_alt.fill(0.0)
-	_wheel_buffer.fill(0.0);    _wheel_buffer_alt.fill(0.0)
-	_brake_buffer.fill(0.0);    _brake_buffer_alt.fill(0.0)
+	_body_super_buffer.fill(0.0)
+	_roof_super_buffer.fill(0.0)
+	_wheel_super_buffer.fill(0.0)
+	_brake_super_buffer.fill(0.0)
 	_wheel_angle.fill(0.0)
 	_slot_vtype.fill("")
 	_slot_status.fill("")
@@ -1011,19 +1189,17 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 
 	# Status colour, modulado por el tipo de vehículo para distinguir visualmente
 	# coches / motos / camiones sin duplicar MultiMeshes.
-	# Se escribe a AMBOS buffers (write target + alt) porque los workers solo
-	# tocan los floats 0-11 (transform); el color sobrevive al swap del
-	# doble buffer y debe estar al día en cualquiera que se suba al GPU.
+	# Se mirrorea a LOS 3 RING SLOTS del super-buffer porque los workers sólo
+	# tocan los floats 0-11 (transform); el color debe estar al día en
+	# cualquier ring slot que el `_process` vaya a subir al GPU.
 	var color := _get_status_color(status) * _get_vtype_tint(vtype)
-	var off   := slot * 16
-	_body_buffer[off + 12] = color.r;     _body_buffer[off + 13] = color.g
-	_body_buffer[off + 14] = color.b;     _body_buffer[off + 15] = color.a
-	_body_buffer_alt[off + 12] = color.r; _body_buffer_alt[off + 13] = color.g
-	_body_buffer_alt[off + 14] = color.b; _body_buffer_alt[off + 15] = color.a
-	_roof_buffer[off + 12] = color.r;     _roof_buffer[off + 13] = color.g
-	_roof_buffer[off + 14] = color.b;     _roof_buffer[off + 15] = color.a
-	_roof_buffer_alt[off + 12] = color.r; _roof_buffer_alt[off + 13] = color.g
-	_roof_buffer_alt[off + 14] = color.b; _roof_buffer_alt[off + 15] = color.a
+	for ring_i in range(_RING_SIZE):
+		var bo := ring_i * _body_ring_stride + slot * 16
+		_body_super_buffer[bo + 12] = color.r; _body_super_buffer[bo + 13] = color.g
+		_body_super_buffer[bo + 14] = color.b; _body_super_buffer[bo + 15] = color.a
+		var ro := ring_i * _roof_ring_stride + slot * 16
+		_roof_super_buffer[ro + 12] = color.r; _roof_super_buffer[ro + 13] = color.g
+		_roof_super_buffer[ro + 14] = color.b; _roof_super_buffer[ro + 15] = color.a
 
 	# Luz de freno: rojo brillante al decelerar fuerte o al estar parado, tenue
 	# el resto del tiempo (piloto posterior normal). Dos instancias por slot.
@@ -1034,15 +1210,12 @@ func _update_slot(slot: int, state: Dictionary) -> void:
 		bl_r = 1.0;  bl_g = 0.08; bl_b = 0.08
 	else:
 		bl_r = 0.22; bl_g = 0.02; bl_b = 0.02
-	var bloff := slot * 2 * 16
-	_brake_buffer[bloff + 12] = bl_r;     _brake_buffer[bloff + 13] = bl_g
-	_brake_buffer[bloff + 14] = bl_b;     _brake_buffer[bloff + 15] = 1.0
-	_brake_buffer[bloff + 28] = bl_r;     _brake_buffer[bloff + 29] = bl_g
-	_brake_buffer[bloff + 30] = bl_b;     _brake_buffer[bloff + 31] = 1.0
-	_brake_buffer_alt[bloff + 12] = bl_r; _brake_buffer_alt[bloff + 13] = bl_g
-	_brake_buffer_alt[bloff + 14] = bl_b; _brake_buffer_alt[bloff + 15] = 1.0
-	_brake_buffer_alt[bloff + 28] = bl_r; _brake_buffer_alt[bloff + 29] = bl_g
-	_brake_buffer_alt[bloff + 30] = bl_b; _brake_buffer_alt[bloff + 31] = 1.0
+	for ring_i in range(_RING_SIZE):
+		var bro := ring_i * _brake_ring_stride + slot * 2 * 16
+		_brake_super_buffer[bro + 12] = bl_r; _brake_super_buffer[bro + 13] = bl_g
+		_brake_super_buffer[bro + 14] = bl_b; _brake_super_buffer[bro + 15] = 1.0
+		_brake_super_buffer[bro + 28] = bl_r; _brake_super_buffer[bro + 29] = bl_g
+		_brake_super_buffer[bro + 30] = bl_b; _brake_super_buffer[bro + 31] = 1.0
 	_slot_status[slot] = status
 
 

@@ -31,6 +31,7 @@ SimulationStateManager="*res://scripts/autoload/simulation_state_manager.gd"
 TrafficLightManager="*res://scripts/autoload/traffic_light_manager.gd"
 IncidentManager="*res://scripts/autoload/incident_manager.gd"
 ZoneManager="*res://scripts/autoload/zone_manager.gd"
+PerfMonitor="*res://scripts/autoload/perf_monitor.gd"
 
 [display]
 
