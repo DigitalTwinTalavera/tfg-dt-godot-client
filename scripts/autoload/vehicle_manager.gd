@@ -92,6 +92,17 @@ func get_vehicle(vehicle_id: String) -> Dictionary:
 	return combined
 
 
+## Refresca la metadata cacheada de un vehículo (p. ej. tras un reroute en el
+## backend, donde `route_edges`/`route_length_m`/`end_node_id` han cambiado sin
+## que haya un respawn). Solo actualiza si el vehículo sigue activo.
+func update_vehicle_meta(vehicle_id: String, data: Dictionary) -> void:
+	if not vehicles.has(vehicle_id):
+		return
+	var meta: Dictionary = _vehicles_meta.get(vehicle_id, {})
+	meta.merge(data, true)  # los campos nuevos del backend sobrescriben
+	_vehicles_meta[vehicle_id] = meta
+
+
 ## Returns all vehicle IDs currently tracked
 func get_all_ids() -> Array:
 	return vehicles.keys()
