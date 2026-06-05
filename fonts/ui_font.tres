@@ -1,0 +1,14 @@
+[gd_resource type="FontVariation" format=3 uid="uid://b1uifontdt0"]
+
+; Default UI font for the whole client.
+; base_font = Noto Sans (Latin text, identical look to Godot's built-in font),
+; with Twemoji as fallback so the HUD emoji icons (🚦 🗺 ⚙ 🚨 …) render in
+; colour. Twemoji is a CBDT bitmap colour font, which Godot 4.6 renders
+; correctly — unlike Noto Color Emoji (COLRv1), whose glyphs are dropped.
+
+[ext_resource type="FontFile" uid="uid://cpxsxdk7d63nj" path="res://fonts/NotoSans-Regular.ttf" id="1"]
+[ext_resource type="FontFile" uid="uid://dec4blsb1r32j" path="res://fonts/Twemoji.ttf" id="2"]
+
+[resource]
+base_font = ExtResource("1")
+fallbacks = [ExtResource("2")]

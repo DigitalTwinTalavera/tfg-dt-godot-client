@@ -44,3 +44,7 @@ window/stretch/aspect="expand"
 [editor_plugins]
 
 enabled=PackedStringArray()
+
+[gui]
+
+theme/custom_font="res://fonts/ui_font.tres"

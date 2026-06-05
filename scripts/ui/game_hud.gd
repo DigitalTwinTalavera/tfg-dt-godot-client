@@ -476,7 +476,7 @@ func _build_tab_sim() -> VBoxContainer:
 
 	_auto_spawn_btn = CheckButton.new()
 	_auto_spawn_btn.text = "Auto-spawn"
-	_auto_spawn_btn.add_theme_font_size_override("font_size", 11)
+	_style_panel_check(_auto_spawn_btn)
 	_auto_spawn_btn.toggled.connect(_on_auto_spawn_toggled)
 	auto_row.add_child(_auto_spawn_btn)
 
@@ -593,8 +593,7 @@ func _build_tab_map() -> VBoxContainer:
 	chk_roads.text = "Carreteras"
 	chk_roads.button_pressed = true
 	chk_roads.tooltip_text = "Mostrar u ocultar las carreteras en el mapa"
-	chk_roads.add_theme_font_size_override("font_size", 11)
-	chk_roads.add_theme_color_override("font_color", Config.UI.TEXT_COLOR)
+	_style_panel_check(chk_roads)
 	chk_roads.toggled.connect(func(v: bool) -> void:
 		if _edge_renderer and _edge_renderer.has_method("set_roads_visible"):
 			_edge_renderer.set_roads_visible(v)
@@ -607,8 +606,7 @@ func _build_tab_map() -> VBoxContainer:
 	# activarlos puntualmente desde aquí si necesita inspeccionar la red.
 	chk_nodes.button_pressed = false
 	chk_nodes.tooltip_text = "Mostrar u ocultar las intersecciones"
-	chk_nodes.add_theme_font_size_override("font_size", 11)
-	chk_nodes.add_theme_color_override("font_color", Config.UI.TEXT_COLOR)
+	_style_panel_check(chk_nodes)
 	chk_nodes.toggled.connect(func(v: bool) -> void:
 		if _node_renderer and _node_renderer.has_method("set_nodes_visible"):
 			_node_renderer.set_nodes_visible(v)
@@ -623,8 +621,7 @@ func _build_tab_map() -> VBoxContainer:
 	chk_tl.text = "Semáforos"
 	chk_tl.button_pressed = true
 	chk_tl.tooltip_text = "Mostrar u ocultar los semáforos"
-	chk_tl.add_theme_font_size_override("font_size", 11)
-	chk_tl.add_theme_color_override("font_color", Config.UI.TEXT_COLOR)
+	_style_panel_check(chk_tl)
 	chk_tl.toggled.connect(func(v: bool) -> void:
 		if _node_renderer and _node_renderer.has_method("set_traffic_lights_visible"):
 			_node_renderer.set_traffic_lights_visible(v)
@@ -635,8 +632,7 @@ func _build_tab_map() -> VBoxContainer:
 	chk_arrows.text = "Flechas"
 	chk_arrows.button_pressed = true
 	chk_arrows.tooltip_text = "Mostrar u ocultar las flechas de sentido único"
-	chk_arrows.add_theme_font_size_override("font_size", 11)
-	chk_arrows.add_theme_color_override("font_color", Config.UI.TEXT_COLOR)
+	_style_panel_check(chk_arrows)
 	chk_arrows.toggled.connect(func(v: bool) -> void:
 		if _edge_renderer and _edge_renderer.has_method("set_arrows_visible"):
 			_edge_renderer.set_arrows_visible(v)
@@ -755,7 +751,7 @@ func _build_tab_settings() -> VBoxContainer:
 
 	var smooth_chk := CheckButton.new()
 	smooth_chk.button_pressed = Config.Camera.SMOOTH_ENABLED
-	smooth_chk.add_theme_font_size_override("font_size", 11)
+	_style_panel_check(smooth_chk)
 	smooth_chk.toggled.connect(func(v: bool) -> void: camera_smooth_changed.emit(v))
 	smooth_row.add_child(smooth_chk)
 
@@ -767,7 +763,7 @@ func _build_tab_settings() -> VBoxContainer:
 	var debug_chk := CheckBox.new()
 	debug_chk.text = "Debug info"
 	debug_chk.button_pressed = Config.DEBUG_MODE
-	debug_chk.add_theme_font_size_override("font_size", 11)
+	_style_panel_check(debug_chk)
 	vbox.add_child(debug_chk)
 
 	vbox.add_child(HSeparator.new())
@@ -1569,6 +1565,18 @@ func _make_info_label(text: String) -> Label:
 	lbl.add_theme_color_override("font_color", Config.UI.TEXT_COLOR)
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
 	return lbl
+
+
+## Recolour a CheckBox/CheckButton label for *every* button state so it stays
+## legible on the light (near-white) HUD panels. Overriding only `font_color`
+## leaves the checked/hover states on Godot's dark-theme default (white), which
+## is invisible here — that's why ticked layers (Carreteras, Semáforos, Flechas)
+## looked blank. Not for checks inside dark popup dialogs.
+func _style_panel_check(c: Button) -> void:
+	c.add_theme_font_size_override("font_size", 11)
+	for state in ["font_color", "font_pressed_color", "font_hover_color",
+			"font_hover_pressed_color", "font_focus_color"]:
+		c.add_theme_color_override(state, Config.UI.TEXT_COLOR)
 
 
 func _make_btn(text: String, tooltip: String = "", primary: bool = false) -> Button:
