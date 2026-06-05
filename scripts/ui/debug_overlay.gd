@@ -8,6 +8,7 @@
 ##   • Visible = false al arrancar — DemoController hace toggle con F3.
 ##   • Se refresca por signal `PerfMonitor.sample_ready`, NO por _process,
 ##     para no contaminar la métrica TIME_PROCESS que estamos midiendo.
+class_name DebugOverlay
 extends CanvasLayer
 
 

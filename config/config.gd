@@ -174,7 +174,7 @@ class VehicleRendering:
 	const MATERIAL_ROUGHNESS: float = 0.4
 	const MATERIAL_METALLIC: float = 0.2
 	const RAYCAST_MAX_DISTANCE: float = 10000.0
-	## Interpolation — smooth movement between 10 Hz server ticks.
+	## Interpolation — smooth movement between server ticks (sim_time based).
 	##
 	## Estrategia: snapshot interpolation con retraso de render.
 	##   • El cliente mantiene los dos últimos snapshots recibidos por vehículo.
@@ -185,7 +185,7 @@ class VehicleRendering:
 	##     retroceder aunque el servidor envíe ticks con retraso variable.
 	##   • MAX_DEAD_RECKONING se usa solo como red de seguridad si el servidor
 	##     deja de enviar ticks temporalmente (gap > INTERPOLATION_DELAY).
-	const TICK_INTERVAL: float = 0.2       # Expected server tick period (s) a 5 Hz (default backend)
+	const TICK_INTERVAL: float = 0.2       # Periodo de tick nominal (s); el render interpola por sim_time, independiente del rate real
 	const INTERPOLATION_DELAY: float = 0.2 # Render this many seconds "in the past" (s).
 											# Debe igualar TICK_INTERVAL para que render_time cubra el
 											# rango [snap_old_time, snap_new_time] exacto. A 5 Hz el
