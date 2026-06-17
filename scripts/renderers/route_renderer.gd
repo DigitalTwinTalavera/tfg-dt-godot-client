@@ -6,9 +6,10 @@ class_name RouteRenderer
 extends Node3D
 
 
-const LINE_HEIGHT_M: float = 4.0
+const LINE_HEIGHT_M: float = 6.0
 const LINE_WIDTH_M: float = 0.8
-const COLOR: Color = Color(1.00, 0.45, 0.05, 0.95)
+## Azul tipo Waze para la ruta del vehículo seleccionado.
+const COLOR: Color = Color(0.13, 0.55, 1.00, 0.95)
 
 
 var _converter: CoordinateConverter = null
@@ -26,6 +27,13 @@ func _ready() -> void:
 	mat.emission_energy_multiplier = 0.8
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	# Doble cara: la cinta es un quad horizontal y sin esto solo se ve desde un
+	# lado (por debajo del mapa). CULL_DISABLED la hace visible desde arriba.
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# Prioridad alta para ganar el orden de transparencias frente a los overlays
+	# de incidentes a altura similar (sin desactivar el test de profundidad, así
+	# la ruta NO traspasa el suelo).
+	mat.render_priority = 2
 	_mesh_instance.material_override = mat
 
 

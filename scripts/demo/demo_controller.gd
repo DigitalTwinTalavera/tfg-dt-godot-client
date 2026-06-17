@@ -16,6 +16,7 @@ var _hud: GameHUD
 var _incident_renderer: IncidentRenderer
 var _zone_renderer: ZoneRenderer
 var _route_renderer: RouteRenderer
+var _debug_overlay: CanvasLayer
 
 ## Estado de modos de operador: creación de incidente (seleccionar arista por
 ## clicks sucesivos en 2 nodos), dibujo de zona (polígono por clicks), y
@@ -38,6 +39,11 @@ var _zone_preview: MeshInstance3D = null
 ## Follow vehicle
 var _follow_vehicle_id: String = ""
 var _follow_height: float = 200.0
+
+## Coche cuya ruta se está consultando/pintando. Sirve para descartar
+## respuestas HTTP tardías de `_show_route_for_vehicle()` cuando el usuario
+## ya seleccionó otro coche o cerró el panel.
+var _route_vehicle_id: String = ""
 
 ## Camera control
 var _camera_speed: float = Config.Camera.KEYBOARD_MOVE_SPEED
@@ -97,6 +103,10 @@ func _setup_sim_components() -> void:
 	_hud.set_renderers(node_renderer, edge_renderer, _vehicle_renderer)
 	add_child(_hud)
 
+	# Debug overlay (F3) — pintado encima del HUD, oculto por defecto.
+	_debug_overlay = (load("res://scripts/ui/debug_overlay.gd") as GDScript).new()
+	add_child(_debug_overlay)
+
 	# Vehicle click → HUD right panel + dibujar ruta pendiente
 	_vehicle_renderer.vehicle_selected.connect(
 		func(vid: String, state: Dictionary) -> void:
@@ -119,7 +129,11 @@ func _setup_sim_components() -> void:
 	_hud.lane_close_mode_requested.connect(_on_lane_close_mode_start)
 	_hud.lane_open_mode_requested.connect(_on_lane_open_mode_start)
 	_hud.operator_mode_cancelled.connect(_on_operator_mode_cancel)
-	_hud.right_panel_closed.connect(func() -> void: _route_renderer.clear_route())
+	_hud.right_panel_closed.connect(
+		func() -> void:
+			_route_vehicle_id = ""
+			_route_renderer.clear_route()
+	)
 
 
 func _connect_signals() -> void:
@@ -408,8 +422,31 @@ func _show_route_for_vehicle(vehicle_id: String) -> void:
 	if state.is_empty():
 		_route_renderer.clear_route()
 		return
-	var edges: Array = state.get("route_edges", [])
-	var idx: int = int(state.get("edge_idx", 0))
+
+	# Recordamos qué coche estamos consultando para descartar respuestas
+	# tardías si el usuario clica otro coche (o cierra el panel) mientras
+	# esperamos la petición HTTP.
+	_route_vehicle_id = vehicle_id
+
+	# Pedimos la ruta FRESCA al backend: si el tramo se cerró y el coche se
+	# replanificó, `route_edges` ya refleja la ruta nueva (el cache local del
+	# spawn no se entera del reroute). Fallback al cache si la red falla.
+	var endpoint := "%s/%s" % [Config.SimEndpoints.VEHICLES, vehicle_id]
+	var result: HTTPResult = await HTTPManager.get_request(endpoint)
+
+	# El usuario clicó otro coche (o cerró el panel) mientras esperábamos.
+	if _route_vehicle_id != vehicle_id:
+		return
+
+	var edges: Array = state.get("route_edges", [])  # fallback: cache del spawn
+	if result.success and result.data is Dictionary:
+		edges = result.data.get("route_edges", edges)
+		VehicleManager.update_vehicle_meta(vehicle_id, result.data)
+
+	# `edge_idx` viene del tick vivo (no del GET): refleja en qué arista de la
+	# ruta está ahora el coche. Tras un reroute el backend preserva el prefijo
+	# recorrido, así que sigue alineado con la ruta nueva.
+	var idx: int = int(VehicleManager.get_vehicle(vehicle_id).get("edge_idx", 0))
 	_route_renderer.show_route(edges, idx)
 
 
@@ -613,3 +650,5 @@ func _unhandled_input(event: InputEvent) -> void:
 				_hud.cancel_reroute()
 		elif key.keycode == KEY_ENTER and _mode == Mode.ZONE_DRAWING:
 			_finish_zone_drawing()
+		elif key.keycode == KEY_F3 and _debug_overlay != null:
+			_debug_overlay.visible = not _debug_overlay.visible

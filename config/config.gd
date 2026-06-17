@@ -174,7 +174,7 @@ class VehicleRendering:
 	const MATERIAL_ROUGHNESS: float = 0.4
 	const MATERIAL_METALLIC: float = 0.2
 	const RAYCAST_MAX_DISTANCE: float = 10000.0
-	## Interpolation — smooth movement between 10 Hz server ticks.
+	## Interpolation — smooth movement between server ticks (sim_time based).
 	##
 	## Estrategia: snapshot interpolation con retraso de render.
 	##   • El cliente mantiene los dos últimos snapshots recibidos por vehículo.
@@ -185,26 +185,33 @@ class VehicleRendering:
 	##     retroceder aunque el servidor envíe ticks con retraso variable.
 	##   • MAX_DEAD_RECKONING se usa solo como red de seguridad si el servidor
 	##     deja de enviar ticks temporalmente (gap > INTERPOLATION_DELAY).
-	const TICK_INTERVAL: float = 0.2       # Expected server tick period (s) a 5 Hz (default backend)
+	const TICK_INTERVAL: float = 0.2       # Periodo de tick nominal (s); el render interpola por sim_time, independiente del rate real
 	const INTERPOLATION_DELAY: float = 0.2 # Render this many seconds "in the past" (s).
-	                                        # Debe igualar TICK_INTERVAL para que render_time cubra el
-	                                        # rango [snap_old_time, snap_new_time] exacto. A 5 Hz el
-	                                        # cliente va 200 ms por detrás del servidor — imperceptible
-	                                        # visualmente y dentro del presupuesto cómodo de jitter.
+											# Debe igualar TICK_INTERVAL para que render_time cubra el
+											# rango [snap_old_time, snap_new_time] exacto. A 5 Hz el
+											# cliente va 200 ms por detrás del servidor — imperceptible
+											# visualmente y dentro del presupuesto cómodo de jitter.
 	const SNAP_DISTANCE: float = 10.0      # Snap without lerp if error > this (metres)
 	const SNAP_HEADING_DEG: float = 45.0   # Snap without lerp if heading changes > this (degrees)
 	const MAX_DEAD_RECKONING: float = 0.50 # Cap dead-reckoning time (seconds) — red de seguridad.
-	                                        # 500 ms absorbe los slow ticks ocasionales del backend con
-	                                        # 6000 vehículos (medido empíricamente: <1% ticks entre 430-500 ms
-	                                        # por spikes de física/MOBIL). A 50 km/h la extrapolación máxima
-	                                        # es ~7 m, por debajo de SNAP_DISTANCE (10 m) — no dispara snaps
-	                                        # falsos ni choques visuales con vehículos adyacentes.
+											# 500 ms absorbe los slow ticks ocasionales del backend con
+											# 6000 vehículos (medido empíricamente: <1% ticks entre 430-500 ms
+											# por spikes de física/MOBIL). A 50 km/h la extrapolación máxima
+											# es ~7 m, por debajo de SNAP_DISTANCE (10 m) — no dispara snaps
+											# falsos ni choques visuales con vehículos adyacentes.
 	## LOD por distancia a cámara para el detalle de ruedas + luces de freno.
 	## Más allá de esta distancia el slot se pliega a transforms degenerados (la
 	## GPU los descarta en setup de vértices) y el worker se ahorra ~80 writes
 	## + 4 llamadas a cos/sin por vehículo. A 300 m una rueda de 0.66 m de
 	## diámetro ocupa <1 px en 1080p con FOV 70°, así que visualmente es gratis.
 	const LOD_DETAIL_DISTANCE: float = 300.0
+	## LOD lejano: más allá de esta distancia el cuerpo+techo también se
+	## colapsan a transforms degenerados → vehículo invisible. El worker se
+	## ahorra los ~24 writes de body+roof además de los ~80 de wheels+brake,
+	## y la rama temprana evita los `cos/sin/lerp` de interpolación. Útil para
+	## cámaras alejadas en stress tests con 6k+ vehículos. A 800 m un coche de
+	## 1.6×1.6 m ocupa <2 px en 1080p, así que es invisible aunque se dibuje.
+	const LOD_HIDE_DISTANCE: float = 800.0
 	## Suavizado de velocidad — solo para tinting/animación de ruedas, ya no para
 	## extrapolar posición (la interpolación entre snapshots es ahora autoritativa).
 	const VELOCITY_EMA_ALPHA: float = 0.4
@@ -312,6 +319,12 @@ class EdgeRendering:
 	const ROUNDABOUT_TINT_BLEND: float = 0.55
 	## Multiplicador de anchura aplicado al ancho base del road cuando es rotonda.
 	const ROUNDABOUT_WIDTH_MULTIPLIER: float = 1.25
+	## Margen extra (m) que se suma a R_outer al recortar las aristas de
+	## entrada/salida de rotonda, para absorber el ángulo del brazo y la
+	## anchura del propio brazo. Sin este margen, brazos oblicuos siguen
+	## metiéndose ligeramente dentro del ring por la componente radial de la
+	## perpendicular al heading.
+	const ROUNDABOUT_ARM_TRIM_SAFETY_M: float = 1.0
 
 
 ## Camera controller configuration
@@ -461,6 +474,26 @@ class Coordinates:
 	## Coordinate precision for comparisons
 	const GPS_PRECISION: float = 0.000001  # ~0.1 meters
 	const METERS_PRECISION: float = 0.01   # 1 centimeter
+
+
+## Performance monitoring (overlay F3 + CSV/stdout sink).
+## Renombrado a `Perf` para no chocar con la clase nativa `Performance` de Godot.
+class Perf:
+	## Sinks for los snapshots periódicos del PerfMonitor.
+	const LOG_TO_STDOUT: bool = true
+	const LOG_TO_CSV: bool = true
+	## Frecuencia de actualización del overlay (Hz). 4 Hz = legible y barato;
+	## evita que el overlay contamine TIME_PROCESS al refrescar cada frame.
+	const OVERLAY_REFRESH_HZ: float = 4.0
+	## Intervalo entre filas del CSV (s). 1 fila por segundo es suficiente para
+	## correlacionar saturaciones con escenarios de carga.
+	const CSV_INTERVAL_S: float = 1.0
+	## Stdout summary period (s). Resumen humano por consola.
+	const STDOUT_INTERVAL_S: float = 5.0
+	## Tamaño máximo de la ventana rolling para timings (samples).
+	## A 30 ticks/s · 1 s ventana = 30 samples es suficiente; sobredimensiono
+	## a 64 para absorber spikes sin reasignar.
+	const TIMING_WINDOW_SIZE: int = 64
 
 
 ## Application settings
